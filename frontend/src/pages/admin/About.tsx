@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
-import { CF_MONITOR_GITHUB_URL, CF_MONITOR_REPOSITORY } from '../../utils/projectLinks';
+import { CF_MONITOR_REPOSITORY } from '../../utils/projectLinks';
 import { Flex, Card, Text, Heading, Badge, Grid, Box, Button, TextField, Tabs } from '@radix-ui/themes';
-import { Activity, Bell, Cloud, Code2, Database, Github, Monitor, ShieldCheck, Server, Zap } from 'lucide-react';
+import { Activity, Bell, Cloud, Code2, Database, Monitor, ShieldCheck, Server, Zap } from 'lucide-react';
 import { formatAppVersion } from '../../utils/version';
 import { useApi } from '../../contexts/AuthContext';
 
@@ -181,9 +181,6 @@ export default function AdminAbout() {
                     <Badge size="2" variant="soft" color="green">Alibaba Cloud ESA</Badge>
                   </Flex>
                 </Box>
-                <Button variant="soft" onClick={() => openExternal(CF_MONITOR_GITHUB_URL)} aria-label="GitHub">
-                  <Github size={16} />
-                </Button>
               </Flex>
             </Card>
 

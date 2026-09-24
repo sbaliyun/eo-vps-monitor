@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Outlet, Link, useNavigate, useLocation } from "react-router-dom";
 import { Flex, Text, Button, IconButton } from "@radix-ui/themes";
-import { LogOut, Menu, X, Home, Github, Palette, Sun, Moon, Laptop } from "lucide-react";
+import { LogOut, Menu, X, Home, Palette, Sun, Moon, Laptop } from "lucide-react";
 import { useAuth } from "../../contexts/AuthContext";
 import { useTheme } from "../../contexts/ThemeContext";
 import { useDisplayTheme } from "../../contexts/DisplayThemeContext";
 import { displayThemeLabels, getNextDisplayTheme, normalizeDisplayTheme } from "../../utils/displayTheme";
-import { CF_MONITOR_GITHUB_URL } from "../../utils/projectLinks";
 import { formatAppVersion } from "../../utils/version";
 import {
   adminMenuItems,
@@ -19,7 +18,6 @@ export default function AdminLayout() {
   const { displayTheme, setDisplayTheme, toggleDisplayTheme } = useDisplayTheme();
   const navigate = useNavigate();
   const location = useLocation();
-  const githubUrl = CF_MONITOR_GITHUB_URL;
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(() => window.matchMedia('(max-width: 768px)').matches);
   const sidebarRef = useRef<HTMLElement | null>(null);
@@ -159,10 +157,6 @@ export default function AdminLayout() {
     setTheme(themes[(idx + 1) % themes.length]);
   };
 
-  const openGithub = () => {
-    if (!githubUrl) return;
-    window.open(githubUrl, "_blank", "noopener,noreferrer");
-  };
 
   const openPublicSite = () => {
     window.open("/", "_blank", "noopener,noreferrer");
@@ -309,17 +303,6 @@ export default function AdminLayout() {
       <main className="admin-main" {...(isMobile && sidebarOpen ? { inert: '' } : {})} style={{ flex: 1, minWidth: 0, padding: "8px 16px 16px", overflowY: "auto" }}>
         <div className="admin-main-content" style={{ maxWidth: 1400, margin: "0 auto", width: "100%" }}>
           <div className="admin-top-actions" aria-label="后台快捷操作">
-            <IconButton
-              className="admin-top-action-button"
-              variant="soft"
-              size="2"
-              onClick={openGithub}
-              aria-label={githubUrl ? "打开 GitHub" : "GitHub 链接待添加"}
-              aria-disabled={!githubUrl}
-              title={githubUrl ? "打开 GitHub" : "GitHub 链接待添加"}
-            >
-              <Github size={18} />
-            </IconButton>
             <IconButton
               className="admin-top-action-button"
               variant="soft"

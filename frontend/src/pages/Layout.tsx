@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
-import { Text, IconButton, SegmentedControl } from "@radix-ui/themes";
-import { Settings, Sun, Moon, Laptop, Palette, Github } from "lucide-react";
+import { IconButton, SegmentedControl } from "@radix-ui/themes";
+import { Settings, Sun, Moon, Laptop, Palette } from "lucide-react";
 
 import { useTheme } from "../contexts/ThemeContext";
 import { hasLocalDisplayThemePreference, useDisplayTheme } from "../contexts/DisplayThemeContext";
 import { displayThemeLabels, getNextDisplayTheme, normalizeDisplayTheme } from "../utils/displayTheme";
-import { CF_MONITOR_GITHUB_URL } from "../utils/projectLinks";
 import { fetchPublicSettings } from "../utils/publicSettings";
 import { subscribePublicDataUpdated } from "../utils/publicDataEvents";
 import { subscribeThemeUpdated } from "../utils/themeEvents";
@@ -46,7 +45,6 @@ export default function Layout() {
   const { displayTheme, setDisplayThemeFromSettings, toggleDisplayTheme } = useDisplayTheme();
   const location = useLocation();
   const navigate = useNavigate();
-  const githubUrl = CF_MONITOR_GITHUB_URL;
   const [siteTitle, setSiteTitle] = useState("ESA VPS Monitor");
   const [siteSubtitle, setSiteSubtitle] = useState<string | null>(null);
   const [siteLogoUrl, setSiteLogoUrl] = useState("");
@@ -102,10 +100,6 @@ export default function Layout() {
     navigate("/admin");
   };
 
-  const openGithub = () => {
-    if (!githubUrl) return;
-    window.open(githubUrl, "_blank", "noopener,noreferrer");
-  };
 
   const themeIcon =
     theme === "dark" ? <Moon size={18} /> : theme === "light" ? <Sun size={18} /> : <Laptop size={18} />;
@@ -154,17 +148,6 @@ export default function Layout() {
           </div>
 
           <div className="nav-actions">
-            <IconButton
-              className="nav-icon-button"
-              variant="soft"
-              size="2"
-              onClick={openGithub}
-              aria-label={githubUrl ? "打开 GitHub" : "GitHub 链接待添加"}
-              aria-disabled={!githubUrl}
-              title={githubUrl ? "打开 GitHub" : "GitHub 链接待添加"}
-            >
-              <Github size={18} />
-            </IconButton>
 
             <IconButton
               className="nav-icon-button"
@@ -204,14 +187,6 @@ export default function Layout() {
         <Outlet />
       </main>
 
-      <footer className="footer">
-        <Text size="2" color="gray" className="footer-powered">
-          <span>Powered by</span>
-          <a href={githubUrl} target="_blank" rel="noreferrer" aria-label="GitHub">
-            <Github size={16} />
-          </a>
-        </Text>
-      </footer>
     </div>
   );
 }
