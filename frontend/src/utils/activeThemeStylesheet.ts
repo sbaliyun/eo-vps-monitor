@@ -4,7 +4,7 @@ export function ensureActiveThemeStylesheet() {
   const link = document.createElement('link');
   link.id = 'cf-monitor-active-theme-css';
   link.rel = 'stylesheet';
-  link.href = '/api/theme/active.css';
+  link.href = '/api/theme/active';
   document.head.appendChild(link);
   return link;
 }
@@ -23,7 +23,7 @@ export function refreshActiveThemeStylesheet(options: { force?: boolean } = {}) 
   const now = Date.now();
   if (!options.force && now - lastThemeRefreshAt < THEME_REFRESH_MIN_INTERVAL_MS) return link;
   lastThemeRefreshAt = now;
-  link.href = `/api/theme/active.css?v=${now}`;
+  link.href = `/api/theme/active?v=${now}`;
   return link;
 }
 

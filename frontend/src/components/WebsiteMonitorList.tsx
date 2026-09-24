@@ -2,6 +2,7 @@ import { useMemo, useRef } from 'react';
 import { Box, Flex, SegmentedControl, Text } from '@radix-ui/themes';
 import { ExternalLink } from 'lucide-react';
 import WebsiteHeartbeatBar, { WebsiteHeartbeatPoint } from './WebsiteHeartbeatBar';
+import { summarizeSsl } from '../utils/sslExpiry';
 
 export type WebsiteMonitorStatus = 'pending' | 'up' | 'down' | 'paused';
 const DEFAULT_WEBSITE_INTERVAL_SEC = 120;
@@ -21,6 +22,9 @@ export interface WebsiteMonitorSummary {
   last_latency_ms: number | null;
   last_effective_reason?: string | null;
   hidden?: boolean;
+  /** HTTPS 证书到期时间（由 Agent 检查）。 */
+  ssl_expires_at?: string | null;
+  ssl_error?: string | null;
   checks: WebsiteHeartbeatPoint[];
 }
 
@@ -141,6 +145,7 @@ export default function WebsiteMonitorList({
           const periodChecks = checksInPeriod(monitor.checks || [], renderPeriodHours);
           const segmentCount = heartbeatSegmentCount(renderPeriodHours, monitor.interval_sec);
           const bucketedChecks = bucketChecksByPeriod(monitor.checks || [], renderPeriodHours, segmentCount);
+          const ssl = summarizeSsl(monitor);
           return (
           <article
             key={monitor.id}
@@ -168,6 +173,12 @@ export default function WebsiteMonitorList({
               </Flex>
               <Text size="1" color={monitor.status === 'up' ? 'green' : monitor.status === 'down' ? 'red' : 'gray'}>
                 {statusLine(monitor)}
+                {ssl && (
+                  <>
+                    {' · '}
+                    <Text as="span" color={ssl.tone} title={ssl.title} className="kuma-monitor-ssl">{ssl.label}</Text>
+                  </>
+                )}
               </Text>
             </Box>
             <Box className="kuma-monitor-row-heartbeat">

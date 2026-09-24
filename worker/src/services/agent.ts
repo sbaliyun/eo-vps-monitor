@@ -14,7 +14,7 @@ import type { AgentMeta, CoreDoc, LiveEntry, StoredClient, StoredWebsiteMonitor 
 import { adminSettingsOf, readCore } from '../store/core';
 import { readLiveEntries, readViewersUntil, viewerTtlMs, writeLiveEntry } from '../store/live';
 import { appendGpuSnapshot, appendPingResults, appendRecords, loadMetricWindowStats, readNodeDocFresh, writeNodeDoc } from '../store/history';
-import { applyWebsiteCheck, mutateWebsites } from '../store/websites';
+import { applySslObservation, applyWebsiteCheck, isHttpsMonitor, mutateWebsites, type SslObservation } from '../store/websites';
 import { normalizeMonitorReport, toMonitorRecord, type MonitorReportPayload } from '../utils/monitor-report';
 import { compactLiveReport } from '../utils/live-report-state';
 import { isPublicIpAddress } from '../utils/request-ip';
@@ -90,6 +90,28 @@ export function websiteProbeTasksForClient(core: CoreDoc, uuid: string, regions:
     .slice(0, limit);
 }
 
+export const SSL_CERT_FEATURE = 'ssl_cert';
+/** 证书检查频率：证书按天计，每小时一次足够。 */
+export const SSL_PROBE_INTERVAL_SEC = 3600;
+
+/**
+ * 负责检查 HTTPS 证书的节点。ssl_probe_client 为 off 时关闭，为节点 UUID 时固定该节点，
+ * 为 auto（默认）时选排序最前、在线且声明支持 ssl_cert 的节点。
+ */
+export function sslProbeClientUuid(core: CoreDoc, entries: Map<string, LiveEntry>, now: number): string | null {
+  const setting = String(adminSettingsOf(core).ssl_probe_client || 'auto').trim();
+  if (setting === 'off') return null;
+  if (setting !== 'auto') return core.clients.some(client => client.uuid === setting) ? setting : null;
+  const candidates = [...core.clients]
+    .filter(client => !client.hidden)
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name) || a.uuid.localeCompare(b.uuid));
+  for (const client of candidates) {
+    const entry = entries.get(client.uuid);
+    if (entry && entry.exp > now && entry.m?.features?.includes(SSL_CERT_FEATURE)) return client.uuid;
+  }
+  return null;
+}
+
 async function pingPolicyVersion(tasks: PingTask[], intervalSec: number): Promise<string> {
   const digestInput = JSON.stringify({
     interval_sec: intervalSec,
@@ -118,15 +140,24 @@ export async function buildAgentPolicy(app: AppServices, core: CoreDoc, client: 
   const active = viewersUntil > now;
   const pingTasks = pingTasksForClient(core, client.uuid, pingIntervalSec);
   const hasProbeMonitors = core.websites.some(monitor => monitor.enabled && monitor.agent_probe_mode !== 'off');
+  const httpsMonitors = core.websites.filter(monitor => monitor.enabled && isHttpsMonitor(monitor));
+  const sslSetting = String(settings.ssl_probe_client || 'auto').trim();
   let websiteTasks: StoredWebsiteMonitor[] = [];
+  let sslTasks: StoredWebsiteMonitor[] = [];
+  const needsRegions = hasProbeMonitors && core.websites.some(monitor => monitor.enabled && monitor.agent_probe_mode === 'country_auto');
+  const needsSslChoice = httpsMonitors.length > 0 && sslSetting === 'auto';
+  const entries = needsRegions || needsSslChoice ? await readLiveEntries(app, null, 60_000) : new Map<string, LiveEntry>();
   if (hasProbeMonitors) {
-    const needsRegions = core.websites.some(monitor => monitor.enabled && monitor.agent_probe_mode === 'country_auto');
     const regions = new Map<string, string>();
-    if (needsRegions) {
-      const entries = await readLiveEntries(app, null, 60_000);
-      for (const [uuid, entry] of entries) if (entry.m?.region) regions.set(uuid, entry.m.region);
+    for (const client of core.clients) {
+      const region = entries.get(client.uuid)?.m?.region || client.seed?.region;
+      if (region) regions.set(client.uuid, region);
     }
     websiteTasks = websiteProbeTasksForClient(core, client.uuid, regions);
+  }
+  if (httpsMonitors.length > 0 && sslProbeClientUuid(core, entries, now) === client.uuid) {
+    const assigned = new Set(websiteTasks.map(monitor => monitor.id));
+    sslTasks = httpsMonitors.filter(monitor => !assigned.has(monitor.id)).slice(0, 50);
   }
   const sampleIntervalSec = active ? activeIntervalSec : Math.min(idleIntervalSec, 60);
   const reportIntervalSec = active ? activeIntervalSec : idleIntervalSec;
@@ -157,7 +188,17 @@ export async function buildAgentPolicy(app: AppServices, core: CoreDoc, client: 
       expected_status_max: monitor.expected_status_max,
       timeout_sec: monitor.timeout_sec,
       interval_sec: monitor.interval_sec,
-    })),
+    })).concat(sslTasks.map(monitor => ({
+      id: monitor.id,
+      config_revision: monitor.config_revision,
+      name: monitor.name,
+      url: monitor.url,
+      method: 'HEAD' as const,
+      expected_status_min: monitor.expected_status_min,
+      expected_status_max: monitor.expected_status_max,
+      timeout_sec: monitor.timeout_sec,
+      interval_sec: Math.max(SSL_PROBE_INTERVAL_SEC, monitor.interval_sec),
+    }))),
     report_now: active,
     viewer_count: active ? 1 : 0,
     viewer_ttl_sec: viewerTtlSec,
@@ -252,6 +293,9 @@ function mergeAgentMeta(previous: AgentMeta, reports: MonitorReportPayload[], so
     region: preferredRegion(latest.region, basic?.region, previous.region) || previous.region || '',
     version: nonEmptyString(latest.version, previous.version || ''),
   };
+  if (Array.isArray(latest.agent_features)) {
+    meta.features = latest.agent_features.filter((item): item is string => typeof item === 'string').slice(0, 16).map(item => item.slice(0, 32));
+  }
   if (basic) {
     meta.cpu_name = nonEmptyString(basic.cpu_name, previous.cpu_name || '');
     meta.virtualization = nonEmptyString(basic.virtualization, previous.virtualization || '');
@@ -360,6 +404,58 @@ function collectWebsiteResults(
   return results;
 }
 
+const CERT_ERROR_REASONS = new Set(['cert_expired', 'cert_invalid', 'cert_hostname_mismatch', 'cert_untrusted', 'tls_error']);
+
+/**
+ * 从 Agent 的网站探测结果里取出证书信息。只要是本系统的 HTTPS 监控就接受，
+ * 不要求该节点被分配为可用性探测节点（证书检查节点只负责证书）。
+ */
+function collectSslObservations(
+  reports: Array<{ report: MonitorReportPayload; timeMs: number }>,
+  core: CoreDoc,
+): Array<{ monitor: StoredWebsiteMonitor; ssl: SslObservation }> {
+  const monitors = new Map(core.websites.map(monitor => [monitor.id, monitor]));
+  const latest = new Map<number, { monitor: StoredWebsiteMonitor; ssl: SslObservation }>();
+  for (const { report, timeMs } of reports) {
+    const raw = Array.isArray(report.website_probe_results) ? report.website_probe_results.slice(0, 50) : [];
+    for (const item of raw as Array<Record<string, unknown>>) {
+      if (!item || typeof item !== 'object') continue;
+      const monitor = monitors.get(Number(item.monitor_id));
+      if (!monitor || !monitor.enabled || !isHttpsMonitor(monitor) || item.config_revision !== monitor.config_revision) continue;
+      const expiresMs = typeof item.cert_expires_at === 'string' ? Date.parse(item.cert_expires_at) : Number.NaN;
+      const reason = typeof item.effective_reason === 'string' ? item.effective_reason : '';
+      const certError = CERT_ERROR_REASONS.has(reason) ? reason : null;
+      if (!Number.isFinite(expiresMs) && !certError) continue;
+      latest.set(monitor.id, {
+        monitor,
+        ssl: {
+          expires_at: Number.isFinite(expiresMs) ? new Date(expiresMs).toISOString() : null,
+          issuer: typeof item.cert_issuer === 'string' && item.cert_issuer ? item.cert_issuer.slice(0, 120) : null,
+          error: certError,
+          checked_at: new Date(timeMs).toISOString(),
+        },
+      });
+    }
+  }
+  return [...latest.values()];
+}
+
+/**
+ * 旧版 Agent（HTTP 模式）把系统、CPU、地区等基础信息单独 POST 到 /api/clients/uploadBasicInfo。
+ * 只合并进实时条目的 meta，不改变在线状态。
+ */
+export async function ingestBasicInfo(app: AppServices, client: StoredClient, body: Record<string, unknown>, sourceIp: string): Promise<void> {
+  const now = app.now();
+  const basic = { ...body };
+  delete basic.token;
+  await writeLiveEntry(app, client.uuid, (previous) => {
+    const merged = mergeAgentMeta(previous?.m || {}, [{ basic_info: basic, version: basic.version } as unknown as MonitorReportPayload], sourceIp, now);
+    return previous
+      ? { ...previous, m: merged.meta }
+      : { t: 0, exp: 0, r: {}, m: merged.meta };
+  });
+}
+
 export function extractReportItems(body: Record<string, unknown>): Record<string, unknown>[] {
   const raw = Array.isArray(body.reports) ? body.reports.slice(0, MAX_REPORTS_PER_BATCH) : [body];
   return raw.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
@@ -409,13 +505,22 @@ export async function ingestReports(
 
   // 2. Agent 网站探测结果（有才写）。
   const websiteResults = recordEnabled ? collectWebsiteResults(items, core, uuid) : [];
+  const sslResults = collectSslObservations(items, core);
   let websiteApplied = 0;
-  if (websiteResults.length > 0 && app.kv.canSpend(2)) {
+  if ((websiteResults.length > 0 || sslResults.length > 0) && app.kv.canSpend(2)) {
     await mutateWebsites(app, (doc) => {
+      let changed = false;
       for (const { monitor, check } of websiteResults) {
-        if (applyWebsiteCheck(doc, monitor, check, now)) websiteApplied += 1;
+        if (applyWebsiteCheck(doc, monitor, check, now)) {
+          websiteApplied += 1;
+          changed = true;
+        }
       }
-    });
+      for (const { monitor, ssl } of sslResults) {
+        if (applySslObservation(doc, monitor, ssl)) changed = true;
+      }
+      return changed;
+    }, { writeIf: (changed) => changed });
   }
 
   // 3. 历史、Ping、GPU、负载告警（到期才写）。

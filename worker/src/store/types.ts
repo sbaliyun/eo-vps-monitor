@@ -43,6 +43,11 @@ export interface StoredClient {
   sort_order: number;
   created_at: string;
   updated_at: string;
+  /**
+   * 从备份恢复的硬件、系统、地区等信息。Agent 重新上报前用它兜底展示，
+   * 实时 meta 中有值时以实时为准。
+   */
+  seed?: AgentMeta;
 }
 
 export interface StoredWebsiteMonitor {
@@ -131,6 +136,8 @@ export interface AgentMeta {
   swap_total?: number;
   disk_total?: number;
   version?: string;
+  /** Agent 声明支持的可选能力，例如 ssl_cert（探测时读取 HTTPS 证书）。 */
+  features?: string[];
   token_last_used_at?: string;
   token_last_used_ip?: string;
 }
@@ -217,6 +224,13 @@ export interface WebsiteRuntime {
   last_error: string | null;
   down_since: string | null;
   last_notified_at: string | null;
+  /** HTTPS 证书到期时间（Agent 探测时读取；边缘函数拿不到证书）。 */
+  ssl_expires_at?: string | null;
+  ssl_issuer?: string | null;
+  ssl_checked_at?: string | null;
+  /** 证书检查失败原因（例如证书已过期、域名不匹配）。 */
+  ssl_error?: string | null;
+  ssl_notified_at?: string | null;
   /** 最近的原始检测（新在前）。 */
   recent: CompactCheck[];
   /** 20 分钟桶内最新一次检测（新在前），覆盖 72 小时。 */

@@ -291,6 +291,31 @@ test('实时状态：汇总分片被其他地区的旧副本覆盖后，节点�
   }
 });
 
+test('兼容旧版 Agent 的基础信息上报，主题样式有不带扩展名的地址', async () => {
+  const h = await createHarness();
+  try {
+    await h.setupAdmin();
+    const { uuid, token } = await h.addClient('legacy');
+    const basic = await h.agent('POST', '/api/clients/uploadBasicInfo', token, {
+      cpu_name: 'Intel Xeon', os: 'Ubuntu 24.04', arch: 'amd64', cpu_cores: 2, kernel_version: '6.8', region: 'Tokyo, Tokyo, JP',
+      mem_total: 1024, swap_total: 0, disk_total: 2048, version: 'v2.0.1',
+    });
+    assert.equal(basic.status, 200, basic.text);
+    await h.agent('POST', '/api/clients/report', token, sampleReport());
+    const client = await h.call('GET', `/api/admin/clients/${uuid}`);
+    assert.equal(client.json.os, 'Ubuntu 24.04');
+    assert.equal(client.json.region, 'Tokyo, Tokyo, JP');
+    const unauthorized = await h.agent('POST', '/api/clients/uploadBasicInfo', 'bad-token', { os: 'x' });
+    assert.equal(unauthorized.status, 401);
+
+    const css = await h.call('GET', '/api/theme/active', { cookieJar: false });
+    assert.equal(css.status, 200);
+    assert.match(css.headers.get('content-type') || '', /text\/css/);
+  } finally {
+    h.restore();
+  }
+});
+
 test('负载告警：在写历史时评估并按间隔去重', async () => {
   const h = await createHarness();
   try {

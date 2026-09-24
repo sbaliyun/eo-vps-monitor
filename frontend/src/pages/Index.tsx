@@ -84,6 +84,8 @@ function normalizeWebsiteSummary(input: unknown, options: { includeHidden?: bool
     last_latency_ms: typeof value.last_latency_ms === 'number' ? value.last_latency_ms : null,
     last_effective_reason: typeof value.last_effective_reason === 'string' ? value.last_effective_reason : null,
     hidden,
+    ssl_expires_at: typeof value.ssl_expires_at === 'string' ? value.ssl_expires_at : null,
+    ssl_error: typeof value.ssl_error === 'string' ? value.ssl_error : null,
     checks: Array.isArray(value.checks) ? value.checks : [],
   };
 }

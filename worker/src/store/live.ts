@@ -217,7 +217,8 @@ export function buildLiveSnapshot(
       lastReportTime: entry.t,
       sort_order: client.sort_order ?? 0,
     };
-    if (entry.m?.region) projected.region = entry.m.region;
+    const region = entry.m?.region || client.seed?.region;
+    if (region) projected.region = region;
     if (entry.exp > now) {
       online.push(client.uuid);
       clients.push(projected);

@@ -143,7 +143,7 @@ function themeSummary(theme: db.Theme, activeTheme: string) {
     author: theme.author,
     url: theme.url,
     preview_path: theme.preview_path,
-    preview_url: builtin ? builtinThemePreviewUrl(theme.short) : theme.preview_path ? `/api/theme/assets/${encodeURIComponent(theme.short)}/${theme.preview_path}` : '',
+    preview_url: builtin ? builtinThemePreviewUrl(theme.short) : theme.preview_path ? themeFileUrl(theme.short, theme.preview_path) : '',
     active: activeTheme === theme.short,
     deletable: !builtin,
     configurable: true,
@@ -323,7 +323,29 @@ adminThemeRoutes.post('/delete', async (c) => {
   return c.json({ success: true, active_theme: result.activeTheme });
 });
 
-publicThemeRoutes.get('/active.css', async (c) => {
+/**
+ * ESA 会把带扩展名（.css、.webp…）的路径当作静态资源处理，不存在时直接 404 而不进函数，
+ * 所以主题样式与资源另提供不带扩展名的地址：/api/theme/active 与 /api/theme/file/<主题>?path=<文件>。
+ * 旧地址保留，供本地开发和其他运行时使用。
+ */
+export function themeFileUrl(short: string, path: string): string {
+  return `/api/theme/file/${encodeURIComponent(short)}?path=${encodeURIComponent(path)}`;
+}
+
+/** 把主题 CSS 里写死的 /api/theme/assets/<主题>/<文件> 改写为不带扩展名的地址。 */
+export function rewriteThemeAssetUrls(css: string): string {
+  return css.replace(/\/api\/theme\/assets\/([A-Za-z0-9_-]+)\/([^)'"\s?#]+)/g, (_match, short: string, path: string) => {
+    let decoded = path;
+    try {
+      decoded = decodeURIComponent(path);
+    } catch {
+      // 保留原样
+    }
+    return themeFileUrl(short, decoded);
+  });
+}
+
+async function activeThemeCss(c: AppContext): Promise<Response> {
   try {
     const app = services(c);
     const core = await readCore(app);
@@ -332,24 +354,24 @@ publicThemeRoutes.get('/active.css', async (c) => {
     if (!theme) return cssResponse('');
     const asset = isBuiltinTheme(theme.short) ? null : await readThemeAsset(app, theme, theme.style_path);
     if (!asset && !isBuiltinTheme(theme.short)) return cssResponse('');
-    return cssResponse(buildThemeCss({
+    return cssResponse(rewriteThemeAssetUrls(buildThemeCss({
       styleCss: asset ? new TextDecoder().decode(base64ToBytes(asset.content_base64)) : '',
       config: jsonParseObject(theme.config_json),
       customCss: theme.custom_css,
-    }));
+    })));
   } catch {
     return cssResponse('');
   }
-});
+}
 
-publicThemeRoutes.get('/assets/:theme/*', async (c) => {
-  const short = c.req.param('theme');
+publicThemeRoutes.get('/active.css', activeThemeCss);
+publicThemeRoutes.get('/active', activeThemeCss);
+
+async function serveThemeFile(c: AppContext, short: string, rawPath: string): Promise<Response> {
   if (!/^[A-Za-z0-9_-]+$/.test(short)) return c.json({ error: 'Not Found' }, 404);
   let path: string;
   try {
-    const prefix = `/api/theme/assets/${short}/`;
-    const raw = c.req.path.startsWith(prefix) ? decodeURIComponent(c.req.path.slice(prefix.length)) : '';
-    path = normalizeThemePath(raw);
+    path = normalizeThemePath(rawPath);
   } catch {
     return c.json({ error: 'Not Found' }, 404);
   }
@@ -359,6 +381,20 @@ publicThemeRoutes.get('/assets/:theme/*', async (c) => {
   const asset = theme ? await readThemeAsset(app, theme, path) : null;
   if (!asset) return c.json({ error: 'Not Found' }, 404);
   return new Response(base64ToBytes(asset.content_base64), { headers: themeAssetHeaders(asset.content_type) });
+}
+
+publicThemeRoutes.get('/file/:theme', (c) => serveThemeFile(c, c.req.param('theme'), c.req.query('path') || ''));
+
+publicThemeRoutes.get('/assets/:theme/*', (c) => {
+  const short = c.req.param('theme');
+  const prefix = `/api/theme/assets/${short}/`;
+  let raw = '';
+  try {
+    raw = c.req.path.startsWith(prefix) ? decodeURIComponent(c.req.path.slice(prefix.length)) : '';
+  } catch {
+    return c.json({ error: 'Not Found' }, 404);
+  }
+  return serveThemeFile(c, short, raw);
 });
 
 publicThemeRoutes.get('/manifest/:theme', async (c) => {

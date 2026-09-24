@@ -33,6 +33,7 @@ adminRoutes.route('/', systemAdminRoutes);
 const MAX_SITE_LOGO_BYTES = 1024 * 1024;
 const SETTINGS_SCOPE_KEYS: Record<string, readonly string[]> = {
   site: ['site_title', 'site_subtitle', 'site_description', 'language', 'script_domain', 'site_logo_url'],
+  ssl: ['ssl_probe_client', 'ssl_expiry_notify_days'],
   general: [
     'record_enabled', 'record_preserve_time', 'ping_record_preserve_time', 'live_poll_active_interval_sec',
     'live_poll_idle_interval_sec', 'live_poll_active_max_duration_sec', 'record_persist_interval_sec',

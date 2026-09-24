@@ -5932,6 +5932,12 @@ html[data-monitor-theme='aurora'] .nav-logo-mark {
   min-width: 104px;
 }
 
+.admin-website-ssl-cell {
+  width: 112px;
+  min-width: 112px;
+  white-space: nowrap;
+}
+
 .admin-website-interval-cell {
   width: 70px;
   min-width: 70px;

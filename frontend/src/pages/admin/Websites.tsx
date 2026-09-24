@@ -39,6 +39,8 @@ import { toast } from 'sonner';
 import Loading from '../../components/Loading';
 import WebsiteHeartbeatBar from '../../components/WebsiteHeartbeatBar';
 import { useApi } from '../../contexts/AuthContext';
+import SslSettingsCard from '../../components/admin/SslSettingsCard';
+import { summarizeSsl } from '../../utils/sslExpiry';
 import { notifyWebsiteMonitorsUpdated, subscribeWebsiteMonitorsUpdated, type WebsiteMonitorsUpdateDetail } from '../../utils/websiteMonitorEvents';
 
 type WebsiteStatus = 'pending' | 'up' | 'down' | 'paused';
@@ -75,6 +77,18 @@ interface WebsiteMonitor {
   last_raw_status_code: number | null;
   last_latency_ms: number | null;
   last_effective_reason: string | null;
+  ssl_expires_at?: string | null;
+  ssl_issuer?: string | null;
+  ssl_checked_at?: string | null;
+  ssl_error?: string | null;
+}
+
+function SslBadge({ monitor }: { monitor: WebsiteMonitor }) {
+  const ssl = summarizeSsl(monitor);
+  if (!ssl) return <Text size="1" color="gray">{/^https:/i.test(monitor.url) ? '待检查' : '-'}</Text>;
+  const title = [ssl.title, monitor.ssl_issuer ? `签发者 ${monitor.ssl_issuer}` : '', monitor.ssl_checked_at ? `检查于 ${new Date(monitor.ssl_checked_at).toLocaleString('zh-CN')}` : '']
+    .filter(Boolean).join('；');
+  return <Badge color={ssl.tone} variant="soft" title={title}>{ssl.label}</Badge>;
 }
 
 interface WebsiteCheck {
@@ -231,6 +245,7 @@ function SortableWebsiteRow({ monitor, selected, dragDisabled, onSelect, onCheck
       <Table.Cell className="admin-website-raw-cell" title={effectiveReasonLabel(monitor.last_effective_reason)}>
         {rawStatusLabel(monitor)}
       </Table.Cell>
+      <Table.Cell className="admin-website-ssl-cell"><SslBadge monitor={monitor} /></Table.Cell>
       <Table.Cell className="admin-website-interval-cell">{monitor.interval_sec}s</Table.Cell>
       <Table.Cell className="admin-website-checked-cell">{formatTime(monitor.last_checked_at)}</Table.Cell>
       <Table.Cell className="admin-website-visibility-cell">{monitor.hidden ? '对游客隐藏' : '公开'}</Table.Cell>
@@ -292,6 +307,7 @@ function SortableWebsiteCard({ monitor, selected, dragDisabled, onSelect, onChec
               <Badge color={statusColor(monitor.status)} variant="soft">{statusLabel(monitor.status)}</Badge>
               <Badge color={monitor.enabled ? 'green' : 'gray'} variant="soft">{monitor.enabled ? '启用' : '停用'}</Badge>
               {monitor.hidden && <Badge color="orange" variant="soft">隐藏</Badge>}
+              {summarizeSsl(monitor) && <SslBadge monitor={monitor} />}
             </Flex>
           </div>
 
@@ -455,6 +471,12 @@ export default function AdminWebsites() {
       setClientsLoaded(true);
     }
   };
+
+  // 证书检查设置需要节点列表。
+  useEffect(() => {
+    ensureClients().catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     monitorsMountedRef.current = true;
@@ -780,6 +802,8 @@ export default function AdminWebsites() {
         </Flex>
       </Card>
 
+      <SslSettingsCard clients={clients} />
+
       <Card className="admin-node-card-panel admin-website-table-card">
         <Flex className="admin-node-card-panel-header" justify="between" align="center" gap="2">
           <Text size="2" weight="bold">网站监控</Text>
@@ -833,6 +857,7 @@ export default function AdminWebsites() {
                       <Table.ColumnHeaderCell className="admin-website-url-cell">网址</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell className="admin-website-status-cell">状态</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell className="admin-website-raw-cell">原始响应</Table.ColumnHeaderCell>
+                      <Table.ColumnHeaderCell className="admin-website-ssl-cell">证书</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell className="admin-website-interval-cell">检测</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell className="admin-website-checked-cell">最近检测</Table.ColumnHeaderCell>
                       <Table.ColumnHeaderCell className="admin-website-visibility-cell">显示</Table.ColumnHeaderCell>

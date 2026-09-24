@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -202,6 +204,7 @@ type Report struct {
 	BasicInfo           *BasicInfo           `json:"basic_info,omitempty"`
 	PingResults         []PingResult         `json:"ping_results,omitempty"`
 	WebsiteProbeResults []WebsiteProbeResult `json:"website_probe_results,omitempty"`
+	AgentFeatures       []string             `json:"agent_features,omitempty"`
 
 	hasRawNetTotals bool
 	rawNetTotalUp   int64
@@ -278,7 +281,13 @@ type WebsiteProbeResult struct {
 	RawStatusCode   *int    `json:"raw_status_code"`
 	LatencyMS       int64   `json:"latency_ms"`
 	Error           *string `json:"error"`
+	// CertExpiresAt 是 HTTPS 站点证书的到期时间（RFC3339，UTC），供服务端做证书到期提醒。
+	CertExpiresAt string `json:"cert_expires_at,omitempty"`
+	CertIssuer    string `json:"cert_issuer,omitempty"`
 }
+
+// agentFeatures 告诉服务端本 Agent 支持的可选能力；服务端据此分配证书检查任务。
+var agentFeatures = []string{"ssl_cert"}
 
 type jsonBool bool
 
@@ -1149,11 +1158,77 @@ func websiteProbeTimeout(task WebsiteProbeTask) time.Duration {
 }
 
 func probeFailureReason(err error) string {
+	if reason := certificateFailureReason(err); reason != "" {
+		return reason
+	}
 	var networkError net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) || strings.Contains(strings.ToLower(err.Error()), "timeout") {
 		return "timeout"
 	}
 	return "network_error"
+}
+
+// certificateFailureReason 把证书校验错误归类，便于服务端区分「证书过期」和一般网络故障。
+func certificateFailureReason(err error) string {
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) {
+		if invalid.Reason == x509.Expired {
+			return "cert_expired"
+		}
+		return "cert_invalid"
+	}
+	var hostname x509.HostnameError
+	if errors.As(err, &hostname) {
+		return "cert_hostname_mismatch"
+	}
+	var unknown x509.UnknownAuthorityError
+	if errors.As(err, &unknown) {
+		return "cert_untrusted"
+	}
+	var verification *tls.CertificateVerificationError
+	if errors.As(err, &verification) {
+		return "cert_invalid"
+	}
+	return ""
+}
+
+func applyCertificate(result *WebsiteProbeResult, cert *x509.Certificate) {
+	if cert == nil {
+		return
+	}
+	result.CertExpiresAt = cert.NotAfter.UTC().Format(time.RFC3339)
+	issuer := cert.Issuer.CommonName
+	if issuer == "" && len(cert.Issuer.Organization) > 0 {
+		issuer = cert.Issuer.Organization[0]
+	}
+	if len(issuer) > 120 {
+		issuer = issuer[:120]
+	}
+	result.CertIssuer = issuer
+}
+
+// fetchPeerCertificate 在证书校验失败时再握手一次（不校验）读取叶子证书，
+// 只用于报告到期时间，不影响「站点不可用」的判定。
+func fetchPeerCertificate(ctx context.Context, host, port string, timeout time.Duration) *x509.Certificate {
+	if port == "" {
+		port = "443"
+	}
+	conn, err := dialPublicTCP(ctx, "tcp", host, port, timeout)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	client := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: true}) // #nosec G402 -- 仅读取证书信息，不传输数据
+	if err := client.HandshakeContext(ctx); err != nil {
+		return nil
+	}
+	defer client.Close()
+	certs := client.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		return nil
+	}
+	return certs[0]
 }
 
 func executeWebsiteHTTPProbe(task WebsiteProbeTask) WebsiteProbeResult {
@@ -1194,13 +1269,21 @@ func executeWebsiteHTTPProbeWithClientContext(parent context.Context, task Websi
 	request.Header.Set("User-Agent", "cf-vps-monitor-agent/"+Version)
 	response, err := client.Do(request)
 	if err != nil {
-		return websiteProbeError(task, time.Since(started).Milliseconds(), probeFailureReason(err))
+		result := websiteProbeError(task, time.Since(started).Milliseconds(), probeFailureReason(err))
+		if parsed.Scheme == "https" && certificateFailureReason(err) != "" {
+			applyCertificate(&result, fetchPeerCertificate(ctx, parsed.Hostname(), parsed.Port(), websiteProbeTimeout(task)))
+		}
+		return result
 	}
 	defer response.Body.Close()
 	if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, 512)); err != nil {
 		return websiteProbeError(task, time.Since(started).Milliseconds(), probeFailureReason(err))
 	}
-	return normalizeWebsiteProbeHTTPResult(task, response.StatusCode, time.Since(started).Milliseconds())
+	result := normalizeWebsiteProbeHTTPResult(task, response.StatusCode, time.Since(started).Milliseconds())
+	if response.TLS != nil && len(response.TLS.PeerCertificates) > 0 {
+		applyCertificate(&result, response.TLS.PeerCertificates[0])
+	}
+	return result
 }
 
 func publicHTTPTransport(timeout time.Duration) *http.Transport {
@@ -3015,7 +3098,7 @@ var (
 
 func collectReportWithInterval(intervalSec int) Report {
 	now := time.Now()
-	r := Report{Version: Version, ReportInterval: intervalSec, Timestamp: now.UnixMilli()}
+	r := Report{Version: Version, ReportInterval: intervalSec, Timestamp: now.UnixMilli(), AgentFeatures: agentFeatures}
 	r.IPv4, r.IPv6 = localIPAddresses()
 
 	if percent, err := cpu.Percent(time.Second, false); err == nil && len(percent) > 0 {

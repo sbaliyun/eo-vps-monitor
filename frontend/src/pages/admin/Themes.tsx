@@ -66,7 +66,7 @@ type ThemesResponse = {
 
 function refreshActiveThemeStylesheet() {
   const link = document.getElementById('cf-monitor-active-theme-css') as HTMLLinkElement | null;
-  if (link) link.href = `/api/theme/active.css?v=${Date.now()}`;
+  if (link) link.href = `/api/theme/active?v=${Date.now()}`;
 }
 
 function configLabel(item: ThemeConfigItem) {
@@ -370,7 +370,7 @@ export default function AdminThemes() {
         <Text size="2" weight="medium">{configLabel(item)}</Text>
         <TextField.Root
           type={item.type === 'number' ? 'number' : 'text'}
-          placeholder={item.type === 'image' ? 'https://example.com/bg.webp 或 /api/theme/assets/主题ID/bg.webp' : undefined}
+          placeholder={item.type === 'image' ? 'https://example.com/bg.webp 或 /api/theme/file/主题ID?path=bg.webp' : undefined}
           value={String(value)}
           onChange={event => updateConfig(item.key!, item.type === 'number' ? Number(event.target.value) : event.target.value)}
         />

@@ -54,6 +54,7 @@ Thumbs.db
 *.exe
 agent/cf-monitor-agent.exe
 agent/agent.exe
+agent/agent
 
 # 文档仅本地保留；README 是仓库的部署/安装入口
 *.md

@@ -33,7 +33,7 @@ import { isEdgeKvAvailable } from '../platform/kv';
 import { readEnvString } from '../platform/env';
 import { SubrequestBudgetExceeded } from '../platform/context';
 import { adminSettingsOf, defaultStoredClient, mutateCore, readCore, toClientView } from '../store/core';
-import type { CoreDoc, StoredClient, StoredWebsiteMonitor } from '../store/types';
+import type { AgentMeta, CoreDoc, StoredClient, StoredWebsiteMonitor } from '../store/types';
 import { readLiveEntries } from '../store/live';
 import { readWebsites, runtimeFor, toWebsiteMonitor } from '../store/websites';
 import { readAlerts } from '../store/alerts';
@@ -249,6 +249,23 @@ function isEncryptedEnvelope(value: unknown): boolean {
   return Boolean(value) && typeof value === 'object' && (value as { schema?: unknown }).schema === ENCRYPTED_BACKUP_SCHEMA_ID;
 }
 
+const SEED_TEXT_FIELDS = ['cpu_name', 'virtualization', 'arch', 'os', 'kernel_version', 'gpu_name', 'ipv4', 'ipv6', 'region', 'version'] as const;
+const SEED_NUMBER_FIELDS = ['cpu_cores', 'mem_total', 'swap_total', 'disk_total'] as const;
+
+/** 备份里的硬件、系统、地区信息：Agent 重新上报前用于展示（例如国旗、系统图标）。 */
+function seedFromBackup(item: Record<string, unknown>): AgentMeta | undefined {
+  const seed: AgentMeta = {};
+  for (const key of SEED_TEXT_FIELDS) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) seed[key] = value.trim().slice(0, 256);
+  }
+  for (const key of SEED_NUMBER_FIELDS) {
+    const value = Number(item[key]);
+    if (Number.isFinite(value) && value > 0) seed[key] = value;
+  }
+  return Object.keys(seed).length > 0 ? seed : undefined;
+}
+
 /** 把备份写入 core：设置合并；节点、Ping、通知规则、网站监控整体替换（与原版一致）。 */
 async function applyBackup(c: AppContext, backup: BackupData): Promise<void> {
   const app = services(c);
@@ -285,6 +302,7 @@ async function applyBackup(c: AppContext, backup: BackupData): Promise<void> {
           traffic_reset_day: Math.min(31, Math.max(1, Number(item.traffic_reset_day || 1))),
           sort_order: Number(item.sort_order ?? index + 1),
           updated_at: now,
+          seed: seedFromBackup(item as Record<string, unknown>),
         }];
       });
       const valid = new Set(core.clients.map(client => client.uuid));

@@ -30,7 +30,7 @@ export default function ThemePreviewFrame({ bootstrap, css }: { bootstrap: Publi
       }
       const activeTheme = previewDocument.createElement('link');
       activeTheme.rel = 'stylesheet';
-      activeTheme.href = window.location.origin + '/api/theme/active.css?preview=' + Date.now();
+      activeTheme.href = window.location.origin + '/api/theme/active?preview=' + Date.now();
       previewDocument.head.appendChild(activeTheme);
       const customStyle = previewDocument.createElement('style');
       customStyle.id = 'theme-preview-custom-css';

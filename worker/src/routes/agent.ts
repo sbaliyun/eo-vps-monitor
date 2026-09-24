@@ -5,7 +5,7 @@
 import { Hono } from 'hono';
 import { adminSettingsOf } from '../store/core';
 import { localRateLimit } from '../store/ratelimit';
-import { authenticateAgent, buildAgentPolicy, extractReportItems, ingestReports, pingTasksForClient } from '../services/agent';
+import { authenticateAgent, buildAgentPolicy, extractReportItems, ingestBasicInfo, ingestReports, pingTasksForClient } from '../services/agent';
 import { maybeRunMaintenance } from '../services/maintenance';
 import { flushAudit } from '../services/notify';
 import { clientIp, isObject, services, type AppContext, type HonoEnv } from './common';
@@ -92,7 +92,15 @@ agentRoutes.get('/ping/tasks', async (c) => {
   return c.json(tasks);
 });
 
-agentRoutes.post('/uploadBasicInfo', (c) => c.json({ error: '请升级 Agent：基础信息已随 /api/clients/report 上报' }, 410));
+// 旧版 Agent 单独上报基础信息（系统、CPU、地区等）；新版随 /report 的 basic_info 一起上报。
+agentRoutes.post('/uploadBasicInfo', async (c) => {
+  const result = await requireAgent(c);
+  if ('response' in result) return result.response;
+  const parsed = await readJsonWithLimit(c.req.raw, 64 * 1024);
+  if (!parsed.ok || !isObject(parsed.body)) return c.json({ error: '基础信息 JSON 格式错误' }, 400);
+  await ingestBasicInfo(services(c), result.auth.client, parsed.body, clientIp(c, ''));
+  return c.json({ success: true });
+});
 agentRoutes.post('/ping/result', (c) => c.json({ error: '请升级 Agent：Ping 结果已随 /api/clients/report 上报' }, 410));
 
 // ESA 函数不支持 WebSocket 服务端：提示以 HTTP 模式运行 Agent。

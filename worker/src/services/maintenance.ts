@@ -15,13 +15,14 @@ import type { MaintenanceDoc, StoredWebsiteMonitor } from '../store/types';
 import { adminSettingsOf, readCore, sortedClients } from '../store/core';
 import { readLiveState, pruneLiveEntries } from '../store/live';
 import { mutateAlerts } from '../store/alerts';
-import { mutateWebsites, applyWebsiteCheck, isWebsiteDue, markWebsiteNotified, needsEdgeCheck, readWebsites, runtimeFor } from '../store/websites';
+import { mutateWebsites, applyWebsiteCheck, isHttpsMonitor, isWebsiteDue, markWebsiteNotified, needsEdgeCheck, readWebsites, runtimeFor, sslDaysLeft } from '../store/websites';
 import { pruneAuditLogs } from '../store/audit';
 import { checkWebsiteMonitorHttp, shouldNotifyWebsiteDown, shouldNotifyWebsiteRecovery } from '../utils/website-monitor';
 import {
   buildExpiryNotification,
   buildNodeRecoveryNotification,
   buildOfflineNotification,
+  buildSslExpiryNotification,
   buildWebsiteAlertNotification,
   buildWebsiteRecoveryNotification,
 } from '../utils/notification-templates';
@@ -34,8 +35,8 @@ export const MAINTENANCE_INTERVAL_MS = 60_000;
 const LEASE_MS = 50_000;
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-type StepName = 'websites' | 'offline' | 'expiry' | 'cleanup';
-const STEPS: StepName[] = ['websites', 'offline', 'expiry', 'websites', 'offline', 'cleanup'];
+type StepName = 'websites' | 'offline' | 'expiry' | 'ssl' | 'cleanup';
+const STEPS: StepName[] = ['websites', 'offline', 'expiry', 'websites', 'offline', 'ssl', 'cleanup'];
 
 let localNextCheckAt = 0;
 
@@ -129,6 +130,8 @@ async function runStep(app: AppServices, step: StepName, now: number): Promise<s
       return runOfflineStep(app, now);
     case 'expiry':
       return runExpiryStep(app, now);
+    case 'ssl':
+      return runSslStep(app, now);
     case 'cleanup':
       return runCleanupStep(app, now);
   }
@@ -290,6 +293,65 @@ async function runOfflineStep(app: AppServices, now: number): Promise<string> {
     for (const uuid of Object.keys(alerts.offline)) if (!valid.has(uuid)) delete alerts.offline[uuid];
   });
   return `rules=${rules.length}; sent=${sentCount}; deferred=${deferred}`;
+}
+
+const SSL_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/** 证书剩余天数不超过阈值（或证书检查失败）时每天提醒一次，更换证书后自动停止。 */
+export function sslReminderDue(
+  runtime: { ssl_expires_at?: string | null; ssl_error?: string | null; ssl_notified_at?: string | null },
+  thresholdDays: number,
+  nowMs: number,
+): { daysLeft: number | null } | null {
+  if (thresholdDays <= 0) return null;
+  const daysLeft = sslDaysLeft(runtime.ssl_expires_at, nowMs);
+  const failing = daysLeft === null && Boolean(runtime.ssl_error);
+  if (!failing && (daysLeft === null || daysLeft > thresholdDays)) return null;
+  const last = runtime.ssl_notified_at ? Date.parse(runtime.ssl_notified_at) : 0;
+  if (Number.isFinite(last) && nowMs - last < SSL_REMINDER_INTERVAL_MS) return null;
+  return { daysLeft };
+}
+
+async function runSslStep(app: AppServices, now: number): Promise<string> {
+  const core = await readCore(app);
+  const settings = adminSettingsOf(core);
+  const threshold = Math.max(0, Math.min(90, Number(settings.ssl_expiry_notify_days ?? 14) || 0));
+  const monitors = core.websites.filter(monitor => monitor.enabled && isHttpsMonitor(monitor));
+  if (threshold <= 0 || monitors.length === 0) return 'skipped';
+  const snapshot = await readWebsites(app, 30_000);
+  const pending = monitors.filter(monitor => sslReminderDue(runtimeFor(snapshot, monitor), threshold, now));
+  if (pending.length === 0) return 'skipped';
+  if (!app.kv.canSpend(2)) throw new SubrequestBudgetExceeded();
+  let sentCount = 0;
+  await mutateWebsites(app, async (doc) => {
+    for (const monitor of pending) {
+      const runtime = runtimeFor(doc, monitor);
+      const due = sslReminderDue(runtime, threshold, now);
+      if (!due) continue;
+      if (!app.subrequests.canSpend(Math.max(1, notificationCost(settings)))) break;
+      let sent = false;
+      try {
+        sent = await sendNotification(app, settings, buildSslExpiryNotification({
+          name: monitor.name,
+          host: new URL(monitor.url).hostname,
+          expiresAt: runtime.ssl_expires_at ?? null,
+          daysLeft: due.daysLeft,
+          error: runtime.ssl_error ?? null,
+          eventTime: new Date(now),
+        }));
+      } catch (error) {
+        if (!(error instanceof SubrequestBudgetExceeded)) throw error;
+      }
+      if (sent || settings.notification_method === 'none') {
+        runtime.ssl_notified_at = new Date(now).toISOString();
+        doc.monitors[String(monitor.id)] = runtime;
+        queueAudit(app, 'system', 'ssl_expiry_notify',
+          `${sent ? '已发送' : '已记录'} SSL 证书提醒: ${monitor.name} - ${due.daysLeft === null ? runtime.ssl_error : `${due.daysLeft} 天`}`);
+        sentCount += sent ? 1 : 0;
+      }
+    }
+  });
+  return `pending=${pending.length}; sent=${sentCount}`;
 }
 
 export function shouldSendExpiryNotification(args: {

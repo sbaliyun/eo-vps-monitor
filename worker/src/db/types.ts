@@ -274,6 +274,10 @@ export interface WebsiteMonitor {
   last_notified_at: string | null;
   created_at: string;
   updated_at: string;
+  ssl_expires_at?: string | null;
+  ssl_issuer?: string | null;
+  ssl_checked_at?: string | null;
+  ssl_error?: string | null;
 }
 
 export type WebsiteMonitorInput = Omit<
@@ -347,6 +351,9 @@ export interface PublicWebsiteMonitor {
   last_latency_ms: number | null;
   last_effective_reason: string | null;
   checks: Array<Pick<WebsiteCheck, 'checked_at' | 'ok' | 'effective_status' | 'effective_reason' | 'status_code' | 'raw_status_code' | 'latency_ms' | 'source_type' | 'source_client'>>;
+  ssl_expires_at?: string | null;
+  ssl_checked_at?: string | null;
+  ssl_error?: string | null;
 }
 
 export interface NotificationDeliveryClaim {

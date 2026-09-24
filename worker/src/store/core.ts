@@ -124,7 +124,24 @@ export function defaultStoredClient(uuid: string, token: string, tokenHash: stri
 
 /** 合并后台字段与 Agent 上报字段，得到完整的 Client 视图。 */
 export function toClientView(stored: StoredClient, meta: AgentMeta | undefined): Client {
-  const m = meta || {};
+  const live = meta || {};
+  const seed = stored.seed || {};
+  // 实时上报优先；尚未上报过的字段用备份里的旧值兜底。
+  const text = (key: keyof AgentMeta): string => {
+    const value = live[key];
+    if (typeof value === 'string' && value) return value;
+    const fallback = seed[key];
+    return typeof fallback === 'string' ? fallback : '';
+  };
+  const count = (key: keyof AgentMeta): number => {
+    const value = Number(live[key]);
+    if (Number.isFinite(value) && value > 0) return value;
+    const fallback = Number(seed[key]);
+    return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+  };
+  const m = { ...live, cpu_name: text('cpu_name'), virtualization: text('virtualization'), arch: text('arch'), cpu_cores: count('cpu_cores'),
+    os: text('os'), kernel_version: text('kernel_version'), gpu_name: text('gpu_name'), ipv4: text('ipv4'), ipv6: text('ipv6'),
+    region: text('region'), mem_total: count('mem_total'), swap_total: count('swap_total'), disk_total: count('disk_total'), version: text('version') };
   return {
     uuid: stored.uuid,
     token: stored.token,

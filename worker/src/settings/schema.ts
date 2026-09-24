@@ -54,6 +54,21 @@ export const SETTING_SCHEMA = {
     public: true,
     maxLength: 32,
   },
+  // 负责检查 HTTPS 证书到期时间的节点：auto 自动选第一个在线且支持的 Agent，off 关闭，或填节点 UUID。
+  ssl_probe_client: {
+    type: 'string',
+    defaultValue: 'auto',
+    public: false,
+    maxLength: 64,
+  },
+  ssl_expiry_notify_days: {
+    type: 'integer',
+    // 证书剩余天数不超过该值时每天提醒一次；0 表示不提醒。
+    defaultValue: '14',
+    public: false,
+    min: 0,
+    max: 90,
+  },
   script_domain: {
     type: 'string',
     defaultValue: '',

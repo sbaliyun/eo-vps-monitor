@@ -105,6 +105,14 @@ test('Supabase 导出 → 加密备份 → 新系统恢复，旧 Token 继续可
       assert.equal(report.status, 200, `旧 Token 应能直接上报：${report.text}`);
     }
 
+    // 备份里的地区、系统等信息在 Agent 重新上报前用于展示（国旗、系统图标）。
+    const pub = await h.call('GET', '/api/clients', { cookieJar: false });
+    const hk = pub.json.find((item) => item.name === 'tokyo-1');
+    assert.equal(hk.region, 'JP');
+    assert.equal(hk.os, 'Debian 12');
+    const live = await h.call('GET', '/api/live/clients', { cookieJar: false });
+    assert.equal(live.json.data[supabaseRow().uuid].region, 'JP', '在线节点的实时数据也带地区');
+
     const settings = await h.call('GET', '/api/admin/settings?scope=site');
     assert.equal(settings.json.site_title, 'My Status');
   } finally {

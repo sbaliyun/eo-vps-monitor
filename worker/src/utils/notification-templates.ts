@@ -105,6 +105,28 @@ export function buildExpiryNotification(input: {
   });
 }
 
+export function buildSslExpiryNotification(input: {
+  name: string;
+  host: string;
+  expiresAt: string | null;
+  daysLeft: number | null;
+  error?: string | null;
+  eventTime?: string | Date;
+}): NotificationMessage {
+  const detail = input.daysLeft === null
+    ? `证书检查失败（${input.error || 'unknown'}），请尽快更新证书`
+    : input.daysLeft < 0
+      ? `证书已过期 ${-input.daysLeft} 天；到期时间 ${formatNotificationTime(input.expiresAt || '')}`
+      : `证书剩余 ${input.daysLeft} 天；到期时间 ${formatNotificationTime(input.expiresAt || '')}`;
+  return eventMessage({
+    emoji: '🔒',
+    event: 'SSL 证书到期提醒',
+    clients: `${input.name} (${input.host})`,
+    message: detail,
+    time: input.eventTime,
+  });
+}
+
 export function buildLoadNotification(input: {
   ruleName: string;
   nodeName: string;

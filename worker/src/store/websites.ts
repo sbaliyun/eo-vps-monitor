@@ -47,10 +47,14 @@ export async function readWebsites(app: AppServices, maxAgeMs = WEBSITES_READ_CA
   return normalizeDoc(await app.kv.getJson<WebsitesDoc>(WEBSITES_KEY, { maxAgeMs }));
 }
 
-export async function mutateWebsites<T>(app: AppServices, mutate: (doc: WebsitesDoc) => T | Promise<T>): Promise<T> {
+export async function mutateWebsites<T>(
+  app: AppServices,
+  mutate: (doc: WebsitesDoc) => T | Promise<T>,
+  options: { writeIf?: (result: T) => boolean } = {},
+): Promise<T> {
   const doc = normalizeDoc(await app.kv.getFreshJson<WebsitesDoc>(WEBSITES_KEY));
   const result = await mutate(doc);
-  await app.kv.putJson(WEBSITES_KEY, doc);
+  if (!options.writeIf || options.writeIf(result)) await app.kv.putJson(WEBSITES_KEY, doc);
   return result;
 }
 
@@ -78,6 +82,10 @@ export function toWebsiteMonitor(monitor: StoredWebsiteMonitor, runtime: Website
     last_error: runtime.last_error,
     down_since: runtime.down_since,
     last_notified_at: runtime.last_notified_at,
+    ssl_expires_at: runtime.ssl_expires_at ?? null,
+    ssl_issuer: runtime.ssl_issuer ?? null,
+    ssl_checked_at: runtime.ssl_checked_at ?? null,
+    ssl_error: runtime.ssl_error ?? null,
   };
 }
 
@@ -259,6 +267,9 @@ export function toPublicWebsiteMonitor(
     last_raw_status_code: runtime.last_raw_status_code,
     last_latency_ms: runtime.last_latency_ms,
     last_effective_reason: runtime.last_effective_reason,
+    ssl_expires_at: runtime.ssl_expires_at ?? null,
+    ssl_checked_at: runtime.ssl_checked_at ?? null,
+    ssl_error: runtime.ssl_error ?? null,
     checks: listChecks(monitor, runtime, checkLimit, sinceSec).map(check => ({
       checked_at: check.checked_at,
       ok: check.ok,
@@ -271,4 +282,40 @@ export function toPublicWebsiteMonitor(
       source_client: check.source_client,
     })),
   };
+}
+
+export interface SslObservation {
+  expires_at: string | null;
+  issuer: string | null;
+  error: string | null;
+  checked_at: string;
+}
+
+/** 同一证书信息 6 小时内不重复写，减少 KV 写入。 */
+const SSL_REWRITE_MS = 6 * 60 * 60 * 1000;
+
+/** 记录 Agent 读到的证书信息；返回是否有变化。 */
+export function applySslObservation(doc: WebsitesDoc, monitor: StoredWebsiteMonitor, ssl: SslObservation): boolean {
+  const runtime = runtimeFor(doc, monitor);
+  const unchanged = runtime.ssl_expires_at === ssl.expires_at && (runtime.ssl_error ?? null) === ssl.error;
+  const lastChecked = runtime.ssl_checked_at ? Date.parse(runtime.ssl_checked_at) : 0;
+  if (unchanged && Date.parse(ssl.checked_at) - lastChecked < SSL_REWRITE_MS) return false;
+  if (runtime.ssl_expires_at !== ssl.expires_at) runtime.ssl_notified_at = null;
+  runtime.ssl_expires_at = ssl.expires_at;
+  runtime.ssl_issuer = ssl.issuer;
+  runtime.ssl_error = ssl.error;
+  runtime.ssl_checked_at = ssl.checked_at;
+  doc.monitors[String(monitor.id)] = runtime;
+  return true;
+}
+
+export function sslDaysLeft(expiresAt: string | null | undefined, nowMs: number): number | null {
+  if (!expiresAt) return null;
+  const expiry = Date.parse(expiresAt);
+  if (!Number.isFinite(expiry)) return null;
+  return Math.floor((expiry - nowMs) / 86_400_000);
+}
+
+export function isHttpsMonitor(monitor: Pick<StoredWebsiteMonitor, 'method' | 'url'>): boolean {
+  return monitor.method !== 'TCP' && /^https:\/\//i.test(monitor.url);
 }
