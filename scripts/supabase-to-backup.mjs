@@ -20,6 +20,7 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
+import { isKnownSettingKey } from '../worker/src/settings/schema.ts';
 import { BACKUP_SCHEMA_ID, BACKUP_SCOPE, BACKUP_VERSION, encryptBackup, validateBackup } from '../worker/src/utils/backup.ts';
 
 function unwrap(value) {
@@ -31,10 +32,14 @@ function unwrap(value) {
   return value;
 }
 
+// settings 表里还混有原系统的运行状态（health:*、维护时间戳、迁移版本），原版备份不会导出它们。
+// 站点 Logo 的内嵌图片在新系统单独存储，这里不迁移，恢复后在后台重新上传即可。
+const SKIPPED_SETTING_KEYS = new Set(['site_logo_url', 'site_logo_data', 'site_logo_type']);
+
 function settingsObject(value) {
   if (!value) return undefined;
-  if (Array.isArray(value)) return Object.fromEntries(value.map((row) => [row.key, row.value ?? '']));
-  return value;
+  const entries = Array.isArray(value) ? value.map((row) => [row.key, row.value ?? '']) : Object.entries(value);
+  return Object.fromEntries(entries.filter(([key]) => isKnownSettingKey(key) && !SKIPPED_SETTING_KEYS.has(key)));
 }
 
 export function buildBackupFromExport(raw, now = new Date()) {

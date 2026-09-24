@@ -65,7 +65,15 @@ test('Supabase 导出 → 加密备份 → 新系统恢复，旧 Token 继续可
           sort_order: 2,
         }),
       ],
-      settings: { site_title: 'My Status' },
+      settings: {
+        site_title: 'My Status',
+        'health:cron_offline': '{"status":"ok"}',
+        maintenance_last_cleanup_at: '2026-09-22T16:18:20.581Z',
+        schema_bootstrap_version: 'postgres-2026-07-09',
+        site_logo_url: '/api/site-logo?v=1',
+        site_logo_data: 'iVBORw0KGgo=',
+        site_logo_type: 'image/png',
+      },
     },
   }];
 
@@ -73,6 +81,7 @@ test('Supabase 导出 → 加密备份 → 新系统恢复，旧 Token 继续可
   assert.equal(result.ok, true, JSON.stringify(result.errors));
   assert.equal(result.backup.clients.length, 2);
   assert.equal(result.backup.clients[1].hidden, true);
+  assert.deepEqual(Object.keys(result.backup.settings), ['site_title'], '只迁移新系统认识的设置，内部状态与 Logo 不迁移');
   const encrypted = await encryptBackup(result.backup, 'import-pass');
   assert.equal(encrypted.ok, true);
 
