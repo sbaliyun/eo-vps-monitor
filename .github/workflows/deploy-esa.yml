@@ -1,0 +1,70 @@
+name: Deploy to ESA
+
+# 手动触发：构建前端静态资源和函数 bundle，然后用 esa-cli 发布到阿里云 ESA 函数和 Pages。
+# 需要在仓库 Settings → Secrets and variables → Actions 中配置：
+#   ESA_ACCESS_KEY_ID / ESA_ACCESS_KEY_SECRET  —— 具有 ESA 函数和 Pages 权限的 RAM 用户 AccessKey
+# 运行时变量（JWT_SECRET、KV_NAMESPACE 等）不在这里设置，请在 ESA 控制台或用
+# `esa-cli env set` / `esa-cli secret put` 配置到对应环境；每次部署会绑定当时的变量快照。
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: ESA 部署环境
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
+          - staging
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-esa-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      ESA_ACCESS_KEY_ID: ${{ secrets.ESA_ACCESS_KEY_ID }}
+      ESA_ACCESS_KEY_SECRET: ${{ secrets.ESA_ACCESS_KEY_SECRET }}
+      ESA_NO_UPDATE_CHECK: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Check credentials
+        run: |
+          if [ -z "$ESA_ACCESS_KEY_ID" ] || [ -z "$ESA_ACCESS_KEY_SECRET" ]; then
+            echo "::error::请先在仓库 Secrets 中配置 ESA_ACCESS_KEY_ID 和 ESA_ACCESS_KEY_SECRET"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          CURRENT_GIT_COMMIT: ${{ github.sha }}
+        run: npm run build
+
+      - name: Deploy
+        run: >-
+          npx --yes esa-cli@1.0.13 deploy
+          --environment "${{ inputs.environment }}"
+          --description "${GITHUB_SHA::7}"
+          --no-preview

@@ -1,0 +1,23 @@
+{
+  "name": "esa-vps-monitor",
+  "version": "2.1.0",
+  "description": "VPS monitor on Alibaba Cloud ESA Functions & Pages with EdgeKV storage",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "test": "node --test",
+    "build": "tsc --noEmit && node ../scripts/build-esa.mjs",
+    "dev": "node ../scripts/dev-server.mjs"
+  },
+  "dependencies": {
+    "fflate": "^0.8.3",
+    "hono": "^4.13.7",
+    "jose": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^5.0.0",
+    "@cloudflare/workers-types": "^4.0.0"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  // 阿里云 ESA 函数和 Pages 项目配置。仓库根目录存在本文件时，控制台中的构建配置不再生效。
+  // 文档：https://help.aliyun.com/zh/edge-security-acceleration/esa/user-guide/build-pages
+  "name": "esa-vps-monitor",
+  "description": "VPS 探针面板：ESA 函数和 Pages + ESA 边缘存储（EdgeKV）",
+  // 函数入口：构建后由 scripts/build-esa.mjs 生成的单文件 ES Module
+  "entry": "./worker/dist/esa-entry.js",
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "assets": {
+    // 前端（React + Vite）构建产物
+    "directory": "./frontend/dist",
+    // 页面导航请求回退到 index.html；API、Agent 等非导航请求交给函数处理
+    "notFoundStrategy": "singlePageApplication"
+  },
+  "dev": {
+    "port": 18080
+  }
+}

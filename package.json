@@ -1,0 +1,29 @@
+{
+  "name": "esa-vps-monitor-monorepo",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "workspaces": [
+    "frontend",
+    "worker"
+  ],
+  "scripts": {
+    "lint": "npm --prefix frontend run lint && npm --prefix worker run lint",
+    "build": "node scripts/check-node.mjs && npm --prefix frontend run build && npm --prefix worker run build",
+    "build:function": "node scripts/build-esa.mjs",
+    "test:js": "node --test",
+    "test:go": "cd agent && go test ./...",
+    "test": "npm run test:js && npm run test:go",
+    "security:check": "node scripts/security-check.mjs",
+    "verify": "npm run lint && npm run build && npm test && npm run security:check",
+    "dev": "node scripts/dev-server.mjs",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "deploy": "npm run build && npx --yes esa-cli@latest deploy --no-preview"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

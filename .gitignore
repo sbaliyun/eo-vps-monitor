@@ -1,0 +1,69 @@
+# Dependencies 
+node_modules/
+frontend/node_modules/
+worker/node_modules/
+
+# Build outputs
+frontend/dist/
+worker/dist/
+worker/.tmp/
+agent/dist/
+release/
+*.tsbuildinfo
+
+# ESA local state and secrets
+# .dev/：esa-cli 打包产物（pub.js）与本地开发服务器的 KV 持久化文件
+.dev/
+.esa/
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Test and preview artifacts
+AI_RELEASE_STATE.md
+frontend/tests/
+worker/tests/
+.tmp/
+agent/.tmp/
+coverage/
+playwright-report/
+test-results/
+design-previews/
+.superpowers/
+.worktrees/
+cf-monitor-encrypted-backup-*.json
+esa-vps-monitor-encrypted-backup-*.json
+esa-vps-monitor-before-restore-*.json
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/
+
+# Generated binaries
+*.exe
+agent/cf-monitor-agent.exe
+agent/agent.exe
+
+# 文档仅本地保留；README 是仓库的部署/安装入口
+*.md
+!/README.md
+docs/
+
+# Trellis 工作流脚手架仅本地保留，不提交、不推送
+# 配套 .trellis/config.yaml 里的 session_auto_commit: false
+.trellis/
+AGENTS.md
+
+# Local AI knowledge base (never commit)
+.ai-knowledge/
