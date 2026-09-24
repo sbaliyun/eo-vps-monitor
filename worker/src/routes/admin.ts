@@ -64,7 +64,7 @@ function hideToken(client: Client): Omit<Client, 'token' | 'token_hash'> {
 }
 
 async function adminClientViews(c: AppContext, core: CoreDoc): Promise<Array<Omit<Client, 'token' | 'token_hash'>>> {
-  const entries = await readLiveEntries(services(c), 5_000);
+  const entries = await readLiveEntries(services(c), null, 5_000);
   return sortedClients(core).map(client => hideToken(toClientView(client, entries.get(client.uuid)?.m)));
 }
 
@@ -141,7 +141,7 @@ adminRoutes.get('/clients/:uuid', async (c) => {
   const core = await readCore(app);
   const client = findClient(core, c.req.param('uuid'));
   if (!client) return c.json({ error: '客户端不存在' }, 404);
-  const entries = await readLiveEntries(app, 5_000);
+  const entries = await readLiveEntries(app, null, 5_000);
   return c.json(hideToken(toClientView(client, entries.get(client.uuid)?.m)));
 });
 
@@ -186,7 +186,7 @@ adminRoutes.post('/clients/:uuid/edit', async (c) => {
   }, { bumpMeta: true });
   if (!updated) return c.json({ error: '客户端不存在' }, 404);
   audit(c, 'client_edit', `编辑客户端: ${uuid}`);
-  const entries = await readLiveEntries(app, 5_000);
+  const entries = await readLiveEntries(app, null, 5_000);
   return c.json({ success: true, changed: 1, client: hideToken(toClientView(updated, entries.get(uuid)?.m)) });
 });
 

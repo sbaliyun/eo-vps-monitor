@@ -123,7 +123,7 @@ export async function buildAgentPolicy(app: AppServices, core: CoreDoc, client: 
     const needsRegions = core.websites.some(monitor => monitor.enabled && monitor.agent_probe_mode === 'country_auto');
     const regions = new Map<string, string>();
     if (needsRegions) {
-      const entries = await readLiveEntries(app, 60_000);
+      const entries = await readLiveEntries(app, null, 60_000);
       for (const [uuid, entry] of entries) if (entry.m?.region) regions.set(uuid, entry.m.region);
     }
     websiteTasks = websiteProbeTasksForClient(core, client.uuid, regions);

@@ -214,6 +214,7 @@ test('离线告警：连续确认后发送，恢复后发送上线通知', async
     shard.entries[uuid].t = Date.now() - 600_000;
     shard.entries[uuid].exp = Date.now() - 300_000;
     h.memory.data.set('live_0', JSON.stringify(shard));
+    h.memory.data.set(`lv_${uuid}`, JSON.stringify(shard.entries[uuid]));
     h.worker.resetKvModuleCacheForTests();
     h.outbound.length = 0;
     for (let i = 0; i < 3; i += 1) await h.runMaintenance();
@@ -230,6 +231,63 @@ test('离线告警：连续确认后发送，恢复后发送上线通知', async
     assert.equal(h.outbound.length, 0, '恢复通知不重复');
   } finally {
     h.restore();
+  }
+});
+
+test('实时状态：汇总分片被其他地区的旧副本覆盖后，节点仍显示在线且不误报离线', async () => {
+  const h = await createHarness();
+  try {
+    await h.setupAdmin();
+    await h.call('POST', '/api/admin/settings', { body: { notification_method: 'webhook', webhook_url: 'https://hooks.example.net/off', offline_confirm_rounds: '1' } });
+    const nodes = [];
+    for (let i = 0; i < 30; i += 1) nodes.push(await h.addClient(`node-${i}`));
+    const staleShard = { entries: {} };
+    for (const [index, node] of nodes.entries()) {
+      const report = await h.agent('POST', '/api/clients/report', node.token, sampleReport());
+      assert.equal(report.status, 200, report.text);
+      assert.ok(report.kvOps <= KV_LIMIT, `上报 KV 操作 ${report.kvOps}`);
+      // 模拟另一边缘节点：它读到的分片里其余节点都是 10 分钟前的旧条目，写回时覆盖了它们。
+      if (index < 25) {
+        const entry = JSON.parse(h.memory.data.get(`lv_${node.uuid}`));
+        staleShard.entries[node.uuid] = { ...entry, t: entry.t - 600_000, exp: entry.t - 300_000 };
+      }
+      await h.call('POST', '/api/admin/notification/offline/edit', { body: { client: node.uuid, enable: true, grace_period: 60 } });
+    }
+    const shard = JSON.parse(h.memory.data.get('live_0'));
+    h.memory.data.set('live_0', JSON.stringify({ ...shard, entries: { ...shard.entries, ...staleShard.entries } }));
+    h.worker.resetKvModuleCacheForTests();
+
+    // 每次轮询在 KV 预算内校正一批「看起来离线」的节点，几次轮询后全部恢复在线。
+    let online = 0;
+    let polls = 0;
+    while (online < 30 && polls < 10) {
+      const live = await h.call('GET', '/api/live/clients');
+      assert.equal(live.status, 200, live.text);
+      assert.ok(live.kvOps <= KV_LIMIT, `实时读取 KV 操作 ${live.kvOps}`);
+      online = live.json.online.length;
+      polls += 1;
+    }
+    assert.equal(online, 30, `轮询 ${polls} 次后全部在线`);
+
+    h.outbound.length = 0;
+    for (let i = 0; i < 3; i += 1) await h.runMaintenance();
+    assert.equal(h.outbound.filter(item => item.url === 'https://hooks.example.net/off').length, 0, '不误报离线');
+  } finally {
+    h.restore();
+  }
+
+  const wide = await createHarness({ KV_OPS_PER_REQUEST: '64' });
+  try {
+    await wide.setupAdmin();
+    const nodes = [];
+    for (let i = 0; i < 12; i += 1) nodes.push(await wide.addClient(`n-${i}`));
+    for (const node of nodes) await wide.agent('POST', '/api/clients/report', node.token, sampleReport());
+    wide.memory.data.set('live_0', JSON.stringify({ entries: {} }));
+    wide.worker.resetKvModuleCacheForTests();
+    const live = await wide.call('GET', '/api/live/clients');
+    assert.equal(live.json.online.length, 12, '预算足够时一次请求校正全部节点');
+  } finally {
+    wide.restore();
   }
 });
 
@@ -265,6 +323,7 @@ test('节点删除清理引用与实时数据', async () => {
     const removed = await h.call('POST', `/api/admin/clients/${uuid}/remove`, { body: {} });
     assert.equal(removed.status, 200, removed.text);
     assert.ok(removed.kvOps <= KV_LIMIT, `remove used ${removed.kvOps}`);
+    assert.equal(h.memory.data.has(`lv_${uuid}`), false, '节点自己的实时键也被删除');
     const tasks = await h.call('GET', '/api/admin/ping');
     assert.equal(tasks.json.length, 0);
     const live = await h.call('GET', '/api/live/clients', { cookieJar: false });

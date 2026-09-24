@@ -59,7 +59,7 @@ publicRoutes.get('/public/bootstrap', async (c) => {
   const app = services(c);
   const includeHidden = await wantsIncludeHidden(c);
   const core = await readCore(app);
-  const entries = await readLiveEntries(app);
+  const entries = await readLiveEntries(app, core);
   const clients = publicClientsOf(core, entries, includeHidden);
   const now = app.now();
   const response = noStoreJson({
@@ -79,14 +79,14 @@ publicRoutes.get('/clients', async (c) => {
   const app = services(c);
   const includeHidden = await wantsIncludeHidden(c);
   const core = await readCore(app);
-  return noStoreJson(publicClientsOf(core, await readLiveEntries(app, 10_000), includeHidden));
+  return noStoreJson(publicClientsOf(core, await readLiveEntries(app, core, 10_000), includeHidden));
 });
 
 publicRoutes.get('/nodes', async (c) => {
   const app = services(c);
   const includeHidden = await wantsIncludeHidden(c);
   const core = await readCore(app);
-  return noStoreJson(nodesOf(publicClientsOf(core, await readLiveEntries(app, 10_000), includeHidden)));
+  return noStoreJson(nodesOf(publicClientsOf(core, await readLiveEntries(app, core, 10_000), includeHidden)));
 });
 
 async function liveResponse(c: AppContext): Promise<Response> {
@@ -95,7 +95,7 @@ async function liveResponse(c: AppContext): Promise<Response> {
   const app = services(c);
   const includeHidden = await wantsIncludeHidden(c);
   const core = await readCore(app);
-  const entries = await readLiveEntries(app);
+  const entries = await readLiveEntries(app, core);
   const snapshot = buildLiveSnapshot(core, entries, includeHidden, app.now());
   await afterLiveRead(c, core);
   return noStoreJson(snapshot);

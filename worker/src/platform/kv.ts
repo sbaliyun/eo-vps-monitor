@@ -115,7 +115,7 @@ export class MemoryKvDriver implements KvDriver {
 
 type ModuleCacheEntry = { value: string | null; at: number };
 
-const MODULE_CACHE_MAX_ENTRIES = 256;
+const MODULE_CACHE_MAX_ENTRIES = 1024;
 const moduleCache = new Map<string, ModuleCacheEntry>();
 
 function moduleCacheGet(key: string, maxAgeMs: number, now: number): ModuleCacheEntry | undefined {
@@ -186,6 +186,16 @@ export class KvSession {
       this.warned.add(key);
       console.warn(`[kv] request exceeded KV budget (${this.operations}/${this.opsLimit}) on ${kind} ${key}`);
     }
+  }
+
+  /**
+   * 不消耗操作数：返回本请求或本 isolate 缓存中的值及其读取时间（可能已过期）。
+   * 用于决定哪些 key 值得花预算刷新。
+   */
+  cached(key: string): { value: string | null; at: number } | undefined {
+    if (this.requestCache.has(key)) return { value: this.requestCache.get(key)!, at: this.now() };
+    const entry = moduleCache.get(key);
+    return entry ? { value: entry.value, at: entry.at } : undefined;
   }
 
   /** 请求内是否已经读过（不消耗操作数）。 */

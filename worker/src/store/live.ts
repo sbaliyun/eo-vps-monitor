@@ -1,9 +1,13 @@
 /**
  * 实时状态：替代原 Durable Object 的在线状态与观看者跟踪。
  *
- * 每个节点上报时读-改-写所在分片 `live_<n>`。多个节点同时写同一分片时，后写者可能用
- * 稍旧的副本覆盖他人条目，但每个节点下一次上报就会自我修复，条目最多落后约一个上报周期；
- * 在线截止时间留有 3 倍上报间隔的余量，不会因此误判离线。
+ * 每个节点的最新状态存两份：
+ * - `lv_<uuid>`：只有该节点自己写，是权威数据，不会被别的节点覆盖；
+ * - `live_<n>` 分片：所有节点读-改-写的汇总，一次读取就能拿到全部节点，作为兜底。
+ *
+ * EdgeKV 在各边缘节点之间最终一致，不同地区的节点同时读-改-写同一分片时，后写者会用
+ * 旧副本覆盖别人的条目（表现为在线机器显示离线）。所以读取时先取分片，再在本请求的
+ * KV 预算内读取各节点自己的键，按上报时间取较新的一份；看起来离线或缓存最旧的节点优先。
  */
 
 import type { AppServices } from '../platform/context';
@@ -15,6 +19,8 @@ import { metaVersionOf, sortedClients } from './core';
 export const VIEWERS_KEY = 'viewers';
 export const LIVE_READ_CACHE_MS = 2_000;
 export const MAX_LIVE_SHARDS = 4;
+/** 读取实时状态时给后续逻辑预留的 KV 操作数。 */
+const LIVE_READ_RESERVED_OPS = 2;
 
 export function liveShardCount(app: AppServices): number {
   return readEnvInt(app.env, 'LIVE_SHARDS', 1, 1, MAX_LIVE_SHARDS);
@@ -22,6 +28,10 @@ export function liveShardCount(app: AppServices): number {
 
 export function liveShardKey(index: number): string {
   return `live_${index}`;
+}
+
+export function nodeLiveKey(uuid: string): string {
+  return `lv_${uuid}`;
 }
 
 export function liveShardOf(uuid: string, count: number): number {
@@ -38,8 +48,41 @@ function normalizeShard(doc: LiveShardDoc | null): LiveShardDoc {
   return doc && doc.entries && typeof doc.entries === 'object' ? doc : { entries: {} };
 }
 
-/** 读取全部分片并按上报时间取每个节点最新的条目。 */
-export async function readLiveEntries(app: AppServices, maxAgeMs = LIVE_READ_CACHE_MS): Promise<Map<string, LiveEntry>> {
+function isLiveEntry(value: unknown): value is LiveEntry {
+  return Boolean(value) && typeof value === 'object' && Number.isFinite((value as LiveEntry).t);
+}
+
+function parseEntry(raw: string | null | undefined): LiveEntry | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isLiveEntry(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function keepNewer(entries: Map<string, LiveEntry>, uuid: string, entry: LiveEntry | undefined): void {
+  if (!entry) return;
+  const existing = entries.get(uuid);
+  if (!existing || existing.t < entry.t) entries.set(uuid, entry);
+}
+
+export interface LiveReadResult {
+  entries: Map<string, LiveEntry>;
+  /** 本次（或 maxAgeMs 内）确实读过节点自己键的节点，可据此确认离线。 */
+  verified: Set<string>;
+}
+
+/**
+ * 读取实时状态。传入 core 时会在预算内用各节点自己的键校正分片里可能被覆盖的条目；
+ * 不传 core 只读分片（用于只需要大致信息的场景，例如地区）。
+ */
+export async function readLiveState(
+  app: AppServices,
+  core: CoreDoc | null,
+  maxAgeMs = LIVE_READ_CACHE_MS,
+): Promise<LiveReadResult> {
   const count = liveShardCount(app);
   const shards = await Promise.all(
     Array.from({ length: count }, (_, index) => app.kv.getJson<LiveShardDoc>(liveShardKey(index), { maxAgeMs })),
@@ -47,15 +90,48 @@ export async function readLiveEntries(app: AppServices, maxAgeMs = LIVE_READ_CAC
   const entries = new Map<string, LiveEntry>();
   for (const shard of shards) {
     for (const [uuid, entry] of Object.entries(normalizeShard(shard).entries)) {
-      if (!entry || typeof entry !== 'object' || !Number.isFinite(entry.t)) continue;
-      const existing = entries.get(uuid);
-      if (!existing || existing.t < entry.t) entries.set(uuid, entry);
+      if (isLiveEntry(entry)) keepNewer(entries, uuid, entry);
     }
   }
-  return entries;
+  const verified = new Set<string>();
+  if (!core) return { entries, verified };
+
+  const now = app.now();
+  const candidates: Array<{ uuid: string; priority: number; at: number }> = [];
+  for (const client of core.clients) {
+    const cached = app.kv.cached(nodeLiveKey(client.uuid));
+    if (cached) keepNewer(entries, client.uuid, parseEntry(cached.value));
+    if (cached && now - cached.at <= maxAgeMs) {
+      verified.add(client.uuid);
+      continue;
+    }
+    const entry = entries.get(client.uuid);
+    // 看起来离线（或从没见过）的节点最可能是被覆盖的，优先刷新。
+    const priority = !entry || entry.exp <= now ? 0 : 1;
+    candidates.push({ uuid: client.uuid, priority, at: cached?.at ?? 0 });
+  }
+  candidates.sort((a, b) => a.priority - b.priority || a.at - b.at);
+  const budget = Math.max(0, app.kv.remaining() - LIVE_READ_RESERVED_OPS);
+  const picked = candidates.slice(0, budget);
+  const fresh = await Promise.all(picked.map(({ uuid }) => app.kv.get(nodeLiveKey(uuid))));
+  picked.forEach(({ uuid }, index) => {
+    keepNewer(entries, uuid, parseEntry(fresh[index]));
+    verified.add(uuid);
+  });
+  return { entries, verified };
 }
 
-/** 更新单个节点的实时条目（读-改-写所在分片）。 */
+export async function readLiveEntries(
+  app: AppServices,
+  core: CoreDoc | null,
+  maxAgeMs = LIVE_READ_CACHE_MS,
+): Promise<Map<string, LiveEntry>> {
+  return (await readLiveState(app, core, maxAgeMs)).entries;
+}
+
+/**
+ * 更新单个节点的实时条目：先写节点自己的键（权威），再在预算允许时更新汇总分片。
+ */
 export async function writeLiveEntry(
   app: AppServices,
   uuid: string,
@@ -63,9 +139,15 @@ export async function writeLiveEntry(
 ): Promise<LiveEntry> {
   const key = liveShardKey(liveShardOf(uuid, liveShardCount(app)));
   const shard = normalizeShard(await app.kv.getFreshJson<LiveShardDoc>(key));
-  const next = build(shard.entries[uuid]);
-  shard.entries[uuid] = next;
-  await app.kv.putJson(key, shard);
+  let previous = shard.entries[uuid];
+  const own = parseEntry(app.kv.cached(nodeLiveKey(uuid))?.value);
+  if (own && (!previous || previous.t < own.t)) previous = own;
+  const next = build(previous);
+  await app.kv.put(nodeLiveKey(uuid), JSON.stringify(next));
+  if (app.kv.canSpend(1)) {
+    shard.entries[uuid] = next;
+    await app.kv.putJson(key, shard);
+  }
   return next;
 }
 
@@ -78,6 +160,7 @@ export async function pruneLiveEntries(
   let removed = 0;
   const count = liveShardCount(app);
   const remove = new Set(removeUuids);
+  const orphans = new Set<string>(removeUuids);
   for (let index = 0; index < count; index += 1) {
     if (!app.kv.canSpend(2)) break;
     const key = liveShardKey(index);
@@ -86,11 +169,16 @@ export async function pruneLiveEntries(
     for (const uuid of Object.keys(shard.entries)) {
       if (remove.has(uuid) || (validUuids && !validUuids.has(uuid))) {
         delete shard.entries[uuid];
+        orphans.add(uuid);
         changed = true;
         removed += 1;
       }
     }
     if (changed) await app.kv.putJson(key, shard);
+  }
+  for (const uuid of orphans) {
+    if (!app.kv.canSpend(1)) break;
+    await app.kv.delete(nodeLiveKey(uuid));
   }
   return removed;
 }

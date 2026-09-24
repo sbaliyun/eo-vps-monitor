@@ -196,7 +196,7 @@ systemAdminRoutes.post('/cron/run', async (c) => {
 async function buildBackupSnapshot(c: AppContext): Promise<BackupData> {
   const app = services(c);
   const core = await readCore(app, 0);
-  const entries = await readLiveEntries(app, 5_000);
+  const entries = await readLiveEntries(app, null, 5_000);
   const alerts = await readAlerts(app);
   const websites = await readWebsites(app);
   const backup: BackupData = {

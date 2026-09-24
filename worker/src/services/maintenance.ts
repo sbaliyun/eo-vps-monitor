@@ -13,7 +13,7 @@ import type { AppServices } from '../platform/context';
 import { SubrequestBudgetExceeded } from '../platform/context';
 import type { MaintenanceDoc, StoredWebsiteMonitor } from '../store/types';
 import { adminSettingsOf, readCore, sortedClients } from '../store/core';
-import { readLiveEntries, pruneLiveEntries } from '../store/live';
+import { readLiveState, pruneLiveEntries } from '../store/live';
 import { mutateAlerts } from '../store/alerts';
 import { mutateWebsites, applyWebsiteCheck, isWebsiteDue, markWebsiteNotified, needsEdgeCheck, readWebsites, runtimeFor } from '../store/websites';
 import { pruneAuditLogs } from '../store/audit';
@@ -229,7 +229,7 @@ async function runOfflineStep(app: AppServices, now: number): Promise<string> {
   if (!app.kv.canSpend(3)) throw new SubrequestBudgetExceeded();
   const settings = adminSettingsOf(core);
   const clients = new Map(core.clients.map(client => [client.uuid, client]));
-  const entries = await readLiveEntries(app, 15_000);
+  const { entries, verified } = await readLiveState(app, core, 15_000);
   const notifyNeverReported = settings.offline_notify_never_reported !== 'false';
   const confirmRounds = Math.max(1, Number(settings.offline_confirm_rounds || DEFAULT_OFFLINE_CONFIRM_ROUNDS));
   let sentCount = 0;
@@ -243,6 +243,8 @@ async function runOfflineStep(app: AppServices, now: number): Promise<string> {
       const lastTime = entry ? new Date(entry.t).toISOString() : null;
       const graceSec = Math.max(30, Number(rule.grace_period || DEFAULT_OFFLINE_GRACE_PERIOD_SEC));
       const offlineNow = entry ? now - entry.t >= graceSec * 1000 : true;
+      // 汇总分片里的条目可能被其他节点覆盖成旧值：没读过该节点自己的键就不累计离线，下一轮再确认。
+      if (offlineNow && !verified.has(rule.client)) continue;
       state.streak = offlineNow ? state.streak + 1 : 0;
       alerts.offline[rule.client] = state;
 
