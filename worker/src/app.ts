@@ -7,7 +7,8 @@ import { Hono } from 'hono';
 import { APP_VERSION, BUILD_COMMIT } from './utils/app-version';
 import { shortGitSha } from './utils/update-check';
 import { readAdminRecoveryKey, readEnvString } from './platform/env';
-import { checkSessionCrypto } from './auth/jwt';
+import { checkSessionCrypto, type SessionCryptoStatus } from './auth/jwt';
+import { probeHmacRuntime } from './auth/crypto-diagnostics';
 import { createAppServices, type AppServices } from './platform/context';
 import { isEdgeOneKvAvailable } from './platform/kv';
 import unixInstaller from '../../agent/install.sh';
@@ -122,15 +123,22 @@ export function createApp(): Hono<HonoEnv> {
       kvError = error instanceof Error ? error.message : String(error);
     }
     const recoveryOk = !c.env.EDGEONE || Boolean(readAdminRecoveryKey(c.env));
-    const sessionCrypto: { ok: boolean; error?: string } = c.env.EDGEONE
+    const sessionCrypto: SessionCryptoStatus = c.env.EDGEONE
       ? await checkSessionCrypto(c.env)
       : { ok: true };
+    const hmacRuntime = c.env.EDGEONE && !sessionCrypto.ok ? await probeHmacRuntime() : undefined;
+    if (sessionCrypto.diagnostic) {
+      console.error('[auth] session crypto self-check failed:', JSON.stringify({
+        error: sessionCrypto.error, ...sessionCrypto.diagnostic, hmac: hmacRuntime,
+      }));
+    }
     return c.json({
       ok: jwtOk && kvOk && recoveryOk && sessionCrypto.ok,
       platform: c.env.EDGEONE ? 'tencent-edgeone' : 'aliyun-esa',
       ...(c.env.EDGEONE ? { runtime: {
         crypto_key_constructor: typeof (globalThis as Record<string, unknown>).CryptoKey === 'function',
         session_crypto_error: sessionCrypto.error || null,
+        ...(sessionCrypto.diagnostic ? { session_crypto_diagnostic: sessionCrypto.diagnostic, hmac: hmacRuntime } : {}),
       } } : {}),
       checks: [
         { key: 'jwt_secret', status: jwtOk ? 'ok' : 'error', detail: jwtOk ? 'JWT_SECRET 已配置' : '缺少 JWT_SECRET 或不足 32 字节' },

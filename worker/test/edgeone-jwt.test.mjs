@@ -18,7 +18,7 @@ const identity = { userId: 'synthetic-user', username: '管理员🚀', sessionV
 const now = Math.floor(Date.now() / 1000);
 const claims = { ...identity, kind: 'cf-monitor-session', purpose: 'admin-session', iat: now, exp: now + 300 };
 
-async function makeRuntime(patched) {
+async function makeRuntime(patched, subtle = webcrypto.subtle) {
   const result = await build({
     absWorkingDir: root, entryPoints: ['worker/src/auth/jwt.ts'], bundle: true,
     platform: 'browser', format: 'iife', globalName: 'JwtCandidate', write: false,
@@ -27,7 +27,7 @@ async function makeRuntime(patched) {
   const context = vm.createContext({
     TextEncoder, TextDecoder, atob, btoa,
     crypto: {
-      subtle: webcrypto.subtle,
+      subtle,
       getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
       randomUUID: webcrypto.randomUUID.bind(webcrypto),
     },
@@ -53,9 +53,32 @@ test('candidate signs and verifies UTF-8 sessions without a global CryptoKey con
 test('session health reports compatibility and configuration errors without exposing tokens', async () => {
   const original = await makeRuntime(false);
   const snapshot = value => JSON.parse(JSON.stringify(value));
-  assert.deepEqual(snapshot(await original.checkSessionCrypto(env)), { ok: false, error: 'ReferenceError' });
-  assert.deepEqual(snapshot(await candidate.checkSessionCrypto({ JWT_SECRET: 'short' })), { ok: false, error: 'AuthConfigurationError' });
+  const missingConstructor = snapshot(await original.checkSessionCrypto(env));
+  assert.equal(missingConstructor.error, 'ReferenceError');
+  assert.equal(missingConstructor.diagnostic.stage, 'sign');
+  assert.match(missingConstructor.diagnostic.message, /CryptoKey is not defined/);
+  const invalidConfig = snapshot(await candidate.checkSessionCrypto({ JWT_SECRET: 'short' }));
+  assert.equal(invalidConfig.error, 'AuthConfigurationError');
+  assert.equal(invalidConfig.diagnostic.stage, 'sign');
+  assert.match(invalidConfig.diagnostic.message, /at least 32 bytes/);
   assert.deepEqual(snapshot(await candidate.checkSessionCrypto(env)), { ok: true });
+});
+
+test('session diagnostics redact encoded secrets and preserve cross-realm crypto error details', async () => {
+  const secret = '  synthetic-quoted-"key\\value-至少32字节🚀  ';
+  const variants = [secret, secret.trim(), JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret),
+    Buffer.from(secret).toString('base64'), Buffer.from(secret).toString('base64url'),
+    Buffer.from(secret).toString('hex'), Buffer.from(secret).toString('hex').toUpperCase()];
+  const fault = new Error(variants.join(' | '));
+  fault.name = 'SyntheticImportError';
+  const runtime = await makeRuntime(true, { importKey: async () => { throw fault; } });
+  const result = await runtime.checkSessionCrypto({ JWT_SECRET: secret });
+  assert.equal(result.error, 'SyntheticImportError');
+  assert.equal(result.diagnostic.stage, 'sign');
+  assert.match(result.diagnostic.stack, /SyntheticImportError/);
+  const serialized = JSON.stringify(result);
+  for (const value of variants) assert.ok(!serialized.includes(value), 'The diagnostic must redact each key encoding');
+  assert.match(result.diagnostic.message, /\[redacted\]/);
 });
 
 test('candidate tokens and existing Hono tokens are mutually compatible', async () => {

@@ -73,18 +73,82 @@ export async function verifyAdminToken(token: string, env: JwtEnv): Promise<Admi
   };
 }
 
-export async function checkSessionCrypto(env: JwtEnv): Promise<{ ok: boolean; error?: string }> {
+export type SessionCryptoStatus = {
+  ok: boolean;
+  error?: string;
+  diagnostic?: { stage: 'sign' | 'verify'; message: string; stack: string };
+};
+
+function redactSessionDiagnostic(text: string, secret: string, token: string): string {
+  const sensitive = new Set([secret, secret.trim(), token]);
+  for (const value of [...sensitive]) {
+    if (value) {
+      sensitive.add(JSON.stringify(value).slice(1, -1));
+      try {
+        sensitive.add(encodeURIComponent(value));
+      } catch {
+        // A malformed surrogate has no valid URI encoding.
+      }
+      const bytes = new TextEncoder().encode(value);
+      const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+      sensitive.add(hex);
+      sensitive.add(hex.toUpperCase());
+      try {
+        const encoded = btoa(Array.from(bytes, byte => String.fromCharCode(byte)).join(''));
+        sensitive.add(encoded);
+        sensitive.add(encoded.replace(/=+$/, ''));
+        sensitive.add(encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''));
+      } catch {
+        // Keep reporting the original crypto error if base64 is unavailable.
+      }
+    }
+  }
+  let result = text;
+  for (const value of [...sensitive].sort((a, b) => b.length - a.length)) {
+    if (value) result = result.replaceAll(value, '[redacted]');
+  }
+  return result.replace(/\b[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, '[redacted-token]');
+}
+
+function cryptoErrorField(error: unknown, field: 'name' | 'message' | 'stack', fallback: string): string {
+  try {
+    if (error && (typeof error === 'object' || typeof error === 'function')) {
+      const value = (error as Record<string, unknown>)[field];
+      if (typeof value === 'string') return value;
+    }
+  } catch {
+    // Native or cross-realm errors may expose throwing property accessors.
+  }
+  return fallback;
+}
+
+export async function checkSessionCrypto(env: JwtEnv): Promise<SessionCryptoStatus> {
   // Exercise the deployed signing and verification path without exposing a
   // token, setting cookies or creating a KV account. This id is not a UUID.
   const probeId = '__edgeone_session_health__';
+  let stage: 'sign' | 'verify' = 'sign';
+  let token = '';
   try {
-    const token = await generateToken(probeId, 'runtime-health', 1, env);
+    token = await generateToken(probeId, 'runtime-health', 1, env);
+    stage = 'verify';
     const identity = await verifyAdminToken(token, env);
     return identity?.userId === probeId
       ? { ok: true }
       : { ok: false, error: 'SessionVerificationError' };
   } catch (error) {
-    // Report only the exception class; crypto errors may contain a token.
-    return { ok: false, error: error instanceof Error ? error.name : 'CryptoRuntimeError' };
+    const secret = env.JWT_SECRET ?? '';
+    const name = cryptoErrorField(error, 'name', 'CryptoRuntimeError');
+    const message = cryptoErrorField(error, 'message', typeof error === 'string' ? error : 'Unknown crypto error');
+    const stack = cryptoErrorField(error, 'stack', '');
+    return {
+      ok: false,
+      error: redactSessionDiagnostic(name, secret, token).slice(0, 100),
+      diagnostic: {
+        stage,
+        // Redact before truncating so a partial secret cannot remain at the boundary.
+        message: redactSessionDiagnostic(message, secret, token).slice(0, 400),
+        stack: redactSessionDiagnostic(stack, secret, token).slice(0, 2000),
+      },
+    };
   }
 }
