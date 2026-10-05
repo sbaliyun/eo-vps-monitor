@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { APP_VERSION, BUILD_COMMIT } from './utils/app-version';
 import { shortGitSha } from './utils/update-check';
 import { readAdminRecoveryKey, readEnvString } from './platform/env';
+import { checkSessionCrypto } from './auth/jwt';
 import { createAppServices, type AppServices } from './platform/context';
 import { isEdgeOneKvAvailable } from './platform/kv';
 import unixInstaller from '../../agent/install.sh';
@@ -121,13 +122,21 @@ export function createApp(): Hono<HonoEnv> {
       kvError = error instanceof Error ? error.message : String(error);
     }
     const recoveryOk = !c.env.EDGEONE || Boolean(readAdminRecoveryKey(c.env));
+    const sessionCrypto: { ok: boolean; error?: string } = c.env.EDGEONE
+      ? await checkSessionCrypto(c.env)
+      : { ok: true };
     return c.json({
-      ok: jwtOk && kvOk && recoveryOk,
+      ok: jwtOk && kvOk && recoveryOk && sessionCrypto.ok,
       platform: c.env.EDGEONE ? 'tencent-edgeone' : 'aliyun-esa',
+      ...(c.env.EDGEONE ? { runtime: {
+        crypto_key_constructor: typeof (globalThis as Record<string, unknown>).CryptoKey === 'function',
+        session_crypto_error: sessionCrypto.error || null,
+      } } : {}),
       checks: [
         { key: 'jwt_secret', status: jwtOk ? 'ok' : 'error', detail: jwtOk ? 'JWT_SECRET 已配置' : '缺少 JWT_SECRET 或不足 32 字节' },
         { key: 'edge_kv', status: kvOk ? 'ok' : 'error', detail: kvOk ? (isEdgeOneKvAvailable(c.env.MONITOR_KV) ? 'EdgeOne KV 绑定 MONITOR_KV 可读' : '本地内存 KV') : kvError },
         ...(c.env.EDGEONE ? [{ key: 'admin_recovery_key', status: recoveryOk ? 'ok' : 'error', detail: recoveryOk ? 'ADMIN_RECOVERY_KEY 已配置' : '请设置至少 32 字节的独立 ADMIN_RECOVERY_KEY' }] : []),
+        ...(c.env.EDGEONE ? [{ key: 'session_crypto', status: sessionCrypto.ok ? 'ok' : 'error', detail: sessionCrypto.ok ? '会话签名和验证可用' : '会话加密功能不可用，请查看函数日志' }] : []),
         { key: 'admin', status: adminPresent ? 'ok' : 'warning', detail: adminPresent ? '管理员已创建' : '尚未创建管理员，请访问 /login' },
       ],
     });

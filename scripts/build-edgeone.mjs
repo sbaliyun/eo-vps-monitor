@@ -5,6 +5,7 @@ import { zipSync } from 'fflate';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { honoCryptoKeyCompatibilityPlugin } from './edgeone-jwt-compat.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -61,6 +62,7 @@ export async function buildEdgeOne({ outfile = join(root, 'worker', 'dist', 'edg
     target: 'es2022', minify, sourcemap: false, legalComments: 'none',
     mainFields: ['browser', 'module', 'main'], conditions: ['browser', 'worker', 'import'],
     loader: { '.sh': 'text', '.ps1': 'text' },
+    plugins: [honoCryptoKeyCompatibilityPlugin()],
     define: { __BUILD_COMMIT__: JSON.stringify(currentCommit()) }, metafile: true,
   });
   const invalid = Object.keys(result.metafile.inputs).filter(input => /^(?:node:|cloudflare:)/.test(input));

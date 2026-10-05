@@ -72,3 +72,19 @@ export async function verifyAdminToken(token: string, env: JwtEnv): Promise<Admi
     sessionVersion: payload.sessionVersion,
   };
 }
+
+export async function checkSessionCrypto(env: JwtEnv): Promise<{ ok: boolean; error?: string }> {
+  // Exercise the deployed signing and verification path without exposing a
+  // token, setting cookies or creating a KV account. This id is not a UUID.
+  const probeId = '__edgeone_session_health__';
+  try {
+    const token = await generateToken(probeId, 'runtime-health', 1, env);
+    const identity = await verifyAdminToken(token, env);
+    return identity?.userId === probeId
+      ? { ok: true }
+      : { ok: false, error: 'SessionVerificationError' };
+  } catch (error) {
+    // Report only the exception class; crypto errors may contain a token.
+    return { ok: false, error: error instanceof Error ? error.name : 'CryptoRuntimeError' };
+  }
+}
