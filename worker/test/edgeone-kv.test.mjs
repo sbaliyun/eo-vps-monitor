@@ -153,3 +153,32 @@ test('failed writes never enter request or module caches', async () => {
   assert.equal(session.cached('config'), undefined);
   assert.equal(await new KvSession(driver).get('config', { maxAgeMs: 60_000 }), null);
 });
+
+test('critical read capacity leaves only the reserved follow-up budget after mandatory reads', async () => {
+  const driver = new MemoryKvDriver();
+  const session = new KvSession(driver, 8);
+  await session.get('core');
+  await session.get('live_0');
+  session.reserveCriticalReadCapacity(10, 2);
+  session.reserveCriticalReadCapacity(10, 2);
+  assert.equal(session.opsLimit, 8, 'The configured request budget is preserved');
+  assert.equal(session.effectiveOpsLimit, 14, 'Repeating a reservation does not create spare capacity');
+  for (let index = 0; index < 10; index += 1) await session.get(`lv_${index}`);
+  assert.equal(session.remaining(), 2);
+  assert.equal(session.canSpend(2), true);
+  assert.equal(session.canSpend(3), false, 'Optional maintenance receives no extra budget');
+  await session.get('viewers');
+  await session.put('viewers', '{"until":1}');
+  assert.equal(session.remaining(), 0);
+  assert.equal(session.canSpend(), false);
+  const ordinary = new KvSession(driver, 8);
+  assert.equal(ordinary.effectiveOpsLimit, 8, 'Expansion belongs only to the reserving request');
+});
+
+test('critical read capacity rejects invalid counts without expanding the request budget', () => {
+  const session = new KvSession(new MemoryKvDriver(), 8);
+  for (const [count, reserved] of [[-1, 2], [1, -2], [0.5, 2], [NaN, 2], [1, Infinity], [Number.MAX_SAFE_INTEGER, 2]]) {
+    assert.throws(() => session.reserveCriticalReadCapacity(count, reserved), RangeError);
+  }
+  assert.equal(session.effectiveOpsLimit, 8);
+});

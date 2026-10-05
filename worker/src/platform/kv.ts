@@ -181,6 +181,7 @@ export function nextRevision(now = Date.now()): number {
 export class KvSession {
   private readonly requestCache = new Map<string, string | null>();
   private operations = 0;
+  private criticalReadCapacity = 0;
   private readonly warned = new Set<string>();
 
   readonly driver: KvDriver;
@@ -197,19 +198,37 @@ export class KvSession {
     return this.operations;
   }
 
+  get effectiveOpsLimit(): number {
+    return this.opsLimit + this.criticalReadCapacity;
+  }
+
   remaining(): number {
-    return Math.max(0, this.opsLimit - this.operations);
+    return Math.max(0, this.effectiveOpsLimit - this.operations);
+  }
+
+  /**
+   * Reserve only the extra capacity needed for mandatory reads and their
+   * follow-up operations. Optional work sees the remainder after those reads,
+   * while the configured budget remains unchanged for ordinary requests.
+   */
+  reserveCriticalReadCapacity(count: number, reservedOps: number): void {
+    if (!Number.isSafeInteger(count) || count < 0 || !Number.isSafeInteger(reservedOps) || reservedOps < 0) {
+      throw new RangeError('Critical KV read capacity must use non-negative integer counts');
+    }
+    const required = this.operations + count + reservedOps;
+    if (!Number.isSafeInteger(required)) throw new RangeError('Critical KV read capacity exceeds the supported range');
+    this.criticalReadCapacity = Math.max(this.criticalReadCapacity, required - this.opsLimit);
   }
 
   canSpend(ops = 1): boolean {
-    return this.operations + ops <= this.opsLimit;
+    return this.operations + ops <= this.effectiveOpsLimit;
   }
 
   private spend(kind: string, key: string): void {
     this.operations += 1;
-    if (this.operations > this.opsLimit && !this.warned.has(key)) {
+    if (this.operations > this.effectiveOpsLimit && !this.warned.has(key)) {
       this.warned.add(key);
-      console.warn(`[kv] request exceeded KV budget (${this.operations}/${this.opsLimit}) on ${kind} ${key}`);
+      console.warn(`[kv] request exceeded KV budget (${this.operations}/${this.effectiveOpsLimit}) on ${kind} ${key}`);
     }
   }
 

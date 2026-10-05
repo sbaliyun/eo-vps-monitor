@@ -25,6 +25,8 @@ import { notificationCost, queueAudit, sendNotification } from './notify';
 
 const HTTP_LIVE_TTL_FALLBACK_MS = 180_000;
 const HTTP_LIVE_TTL_MAX_MS = 24 * 60 * 60 * 1000;
+const EDGEONE_KV_CACHE_MAX_MS = 60_000;
+const EDGEONE_REPORT_SCHEDULING_MARGIN_MS = 30_000;
 const TOKEN_USAGE_REFRESH_MS = 15 * 60_000;
 const MAX_REPORTS_PER_BATCH = 300;
 const METRIC_LABELS: Record<string, string> = { cpu: 'CPU', ram: '内存', load: '负载', disk: '磁盘', temp: '温度' };
@@ -248,10 +250,20 @@ function reportTimestamp(report: Record<string, unknown>, fallback: number, now:
   return parsed;
 }
 
-function liveTtlMs(report: Record<string, unknown>): number {
+function liveTtlMs(report: Record<string, unknown>, settings: Record<string, string>, edgeOne: boolean): number {
   const intervalSec = Number(report.report_interval ?? report.interval_sec ?? report.interval);
-  if (!Number.isFinite(intervalSec) || intervalSec <= 0) return HTTP_LIVE_TTL_FALLBACK_MS;
-  return Math.min(Math.max(intervalSec * 3 * 1000, 30_000), HTTP_LIVE_TTL_MAX_MS);
+  const legacyTtl = !Number.isFinite(intervalSec) || intervalSec <= 0
+    ? HTTP_LIVE_TTL_FALLBACK_MS
+    : Math.min(Math.max(intervalSec * 3 * 1000, 30_000), HTTP_LIVE_TTL_MAX_MS);
+  if (!edgeOne) return legacyTtl;
+
+  // report_interval measures sampling, while idle uploads can batch many
+  // samples. Include the server upload schedule, cross-edge cache delay and
+  // scheduling overhead even when the last sample was sent in active mode.
+  const idleIntervalSec = boundedInt(settings.live_poll_idle_interval_sec, 120, 60, 3600);
+  const minimumTtl = Math.max(HTTP_LIVE_TTL_FALLBACK_MS,
+    idleIntervalSec * 1000 + EDGEONE_KV_CACHE_MAX_MS + EDGEONE_REPORT_SCHEDULING_MARGIN_MS);
+  return Math.min(Math.max(legacyTtl, minimumTtl), HTTP_LIVE_TTL_MAX_MS);
 }
 
 function sanitizeReport(report: MonitorReportPayload, sourceIp: string): MonitorReportPayload {
@@ -496,7 +508,7 @@ export async function ingestReports(
     writeHistory = recordEnabled && (now >= historyDueAt(previous) || pings.length > 0 || items.length > 1);
     return {
       t: now,
-      exp: now + liveTtlMs(latest),
+      exp: now + liveTtlMs(latest, settings, app.env.EDGEONE === true || app.env.EDGEONE === 'true'),
       r: compactLiveReport(latest),
       m: merged.meta,
       h: writeHistory ? now : previousHistoryAt,

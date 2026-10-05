@@ -6,13 +6,14 @@
  * - `live_<n>` 分片：所有节点读-改-写的汇总，一次读取就能拿到全部节点，作为兜底。
  *
  * EdgeKV 在各边缘节点之间最终一致，不同地区的节点同时读-改-写同一分片时，后写者会用
- * 旧副本覆盖别人的条目（表现为在线机器显示离线）。所以读取时先取分片，再在本请求的
- * KV 预算内读取各节点自己的键，按上报时间取较新的一份；看起来离线或缓存最旧的节点优先。
- * 这只能尽力校正：单节点请求跨边缘副本仍可能用旧值覆盖自身状态，读取也可能暂时看不到新值。
+ * 旧副本覆盖别人的条目（表现为在线机器显示离线）。所以读取时先取分片，再读取
+ * 各节点自己的键，按上报时间取较新的一份。EO 完整快照会检查全部节点，不能把
+ * 尚未检查的节点当作离线；旧 ESA 路径保留按预算校正的行为。
+ * 单节点请求跨边缘副本仍可能用旧值覆盖自身状态，读取也可能暂时看不到新值。
  */
 
 import type { AppServices } from '../platform/context';
-import { readEnvInt } from '../platform/env';
+import { readEnvInt, readEnvString } from '../platform/env';
 import { toPublicReport } from '../utils/public-report';
 import type { CoreDoc, LiveEntry, LiveShardDoc, ViewersDoc } from './types';
 import { metaVersionOf, sortedClients } from './core';
@@ -22,6 +23,7 @@ export const LIVE_READ_CACHE_MS = 2_000;
 export const MAX_LIVE_SHARDS = 4;
 /** 读取实时状态时给后续逻辑预留的 KV 操作数。 */
 const LIVE_READ_RESERVED_OPS = 2;
+const LIVE_READ_CONCURRENCY = 8;
 
 export function liveShardCount(app: AppServices): number {
   return readEnvInt(app.env, 'LIVE_SHARDS', 1, 1, MAX_LIVE_SHARDS);
@@ -76,17 +78,23 @@ export interface LiveReadResult {
 }
 
 /**
- * 读取实时状态。传入 core 时会在预算内用各节点自己的键校正分片里可能被覆盖的条目；
+ * 读取实时状态。传入 core 时用各节点自己的键校正分片里可能被覆盖的条目；
  * 不传 core 只读分片（用于只需要大致信息的场景，例如地区）。
  */
 export async function readLiveState(
   app: AppServices,
   core: CoreDoc | null,
   maxAgeMs = LIVE_READ_CACHE_MS,
+  completeSnapshot = false,
 ): Promise<LiveReadResult> {
+  const edgeOne = app.env.EDGEONE === true || readEnvString(app.env, 'EDGEONE') === 'true';
+  const complete = edgeOne && completeSnapshot && core !== null;
   const count = liveShardCount(app);
   const shards = await Promise.all(
-    Array.from({ length: count }, (_, index) => app.kv.getJson<LiveShardDoc>(liveShardKey(index), { maxAgeMs })),
+    Array.from({ length: count }, (_, index) => {
+      if (complete) app.kv.reserveCriticalReadCapacity(1, 0);
+      return app.kv.getJson<LiveShardDoc>(liveShardKey(index), { maxAgeMs });
+    }),
   );
   const entries = new Map<string, LiveEntry>();
   for (const shard of shards) {
@@ -112,13 +120,22 @@ export async function readLiveState(
     candidates.push({ uuid: client.uuid, priority, at: cached?.at ?? 0 });
   }
   candidates.sort((a, b) => a.priority - b.priority || a.at - b.at);
+  if (complete) {
+    // The legacy budget is an application preference, not a reason to return
+    // an incomplete EO snapshot. Keep two operations for the viewer heartbeat;
+    // optional maintenance receives no additional spare capacity.
+    app.kv.reserveCriticalReadCapacity(candidates.length, LIVE_READ_RESERVED_OPS);
+  }
   const budget = Math.max(0, app.kv.remaining() - LIVE_READ_RESERVED_OPS);
   const picked = candidates.slice(0, budget);
-  const fresh = await Promise.all(picked.map(({ uuid }) => app.kv.get(nodeLiveKey(uuid))));
-  picked.forEach(({ uuid }, index) => {
-    keepNewer(entries, uuid, parseEntry(fresh[index]));
-    verified.add(uuid);
-  });
+  for (let offset = 0; offset < picked.length; offset += LIVE_READ_CONCURRENCY) {
+    const batch = picked.slice(offset, offset + LIVE_READ_CONCURRENCY);
+    const fresh = await Promise.all(batch.map(({ uuid }) => app.kv.get(nodeLiveKey(uuid))));
+    batch.forEach(({ uuid }, index) => {
+      keepNewer(entries, uuid, parseEntry(fresh[index]));
+      verified.add(uuid);
+    });
+  }
   return { entries, verified };
 }
 
@@ -127,7 +144,7 @@ export async function readLiveEntries(
   core: CoreDoc | null,
   maxAgeMs = LIVE_READ_CACHE_MS,
 ): Promise<Map<string, LiveEntry>> {
-  return (await readLiveState(app, core, maxAgeMs)).entries;
+  return (await readLiveState(app, core, maxAgeMs, true)).entries;
 }
 
 /**
@@ -139,13 +156,18 @@ export async function writeLiveEntry(
   uuid: string,
   build: (previous: LiveEntry | undefined) => LiveEntry,
 ): Promise<LiveEntry> {
+  const ownKey = nodeLiveKey(uuid);
+  const cachedOwn = parseEntry(app.kv.cached(ownKey)?.value);
+  const edgeOne = app.env.EDGEONE === true || readEnvString(app.env, 'EDGEONE') === 'true';
+  const own = edgeOne ? parseEntry(await app.kv.get(ownKey)) : undefined;
   const key = liveShardKey(liveShardOf(uuid, liveShardCount(app)));
   const shard = normalizeShard(await app.kv.getFreshJson<LiveShardDoc>(key));
   let previous = shard.entries[uuid];
-  const own = parseEntry(app.kv.cached(nodeLiveKey(uuid))?.value);
-  if (own && (!previous || previous.t < own.t)) previous = own;
+  for (const candidate of [own, cachedOwn]) {
+    if (candidate && (!previous || previous.t < candidate.t)) previous = candidate;
+  }
   const next = build(previous);
-  await app.kv.put(nodeLiveKey(uuid), JSON.stringify(next));
+  await app.kv.put(ownKey, JSON.stringify(next));
   if (app.kv.canSpend(1)) {
     shard.entries[uuid] = next;
     await app.kv.putJson(key, shard);
