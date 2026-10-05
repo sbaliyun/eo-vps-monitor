@@ -84,6 +84,61 @@ test('EdgeOne request adapter removes spoofed proxy headers and preserves the re
   assert.equal(missing.headers.get('eo-connecting-ip'), 'unknown');
 });
 
+for (const chunkType of ['ArrayBuffer', 'string', 'DataView']) {
+  test(`actual EdgeOne entry creates and logs in an administrator with ${chunkType} request chunks`, async () => {
+    const h = harness();
+    const username = '管理员🚀';
+    const password = 'Stream-test-password-2026!';
+
+    async function postJson(path, body) {
+      const text = JSON.stringify(body);
+      const bytes = new TextEncoder().encode(text);
+      const chunks = chunkType === 'string'
+        ? Array.from(text)
+        : Array.from(bytes, byte => {
+          if (chunkType === 'ArrayBuffer') return Uint8Array.of(byte).buffer;
+          // Bytes outside the view must not be included in the JSON body.
+          const padded = Uint8Array.of(0xff, 0xff, byte, 0xff);
+          return new DataView(padded.buffer, 2, 1);
+        });
+      const bodyStream = new ReadableStream({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+          controller.close();
+        },
+      });
+      const request = new Request(`https://monitor.example.test${path}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': 'spoofed-client',
+          'EO-Connecting-IP': 'spoofed-client',
+        },
+        body: bodyStream,
+        duplex: 'half',
+      });
+      request.eo = { clientIp: '203.0.113.42' };
+      // onRequest copies this stream while replacing untrusted proxy headers.
+      return onRequest({ request, env: h.env });
+    }
+
+    const created = await postJson('/api/admin/recovery', {
+      username, password, recovery_key: RECOVERY_KEY,
+    });
+    const createdBody = await created.json();
+    assert.equal(created.status, 200, JSON.stringify(createdBody));
+    assert.equal(createdBody.mode, 'created');
+    assert.equal(createdBody.user.username, username);
+
+    const login = await postJson('/api/login', { username, password });
+    const loginBody = await login.json();
+    assert.equal(login.status, 200, JSON.stringify(loginBody));
+    assert.equal(loginBody.user.username, username);
+    assert.ok(login.headers.getSetCookie().some(cookie => /^cf_monitor_session=[^;]+;/.test(cookie)));
+    assert.ok(h.kv.data.size > 0, 'Each chunk type must persist the account in its isolated KV binding');
+  });
+}
+
 test('actual EdgeOne entry supports setup, session/CSRF, Agent reports, live/history, cron and installers', async t => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response('ok');

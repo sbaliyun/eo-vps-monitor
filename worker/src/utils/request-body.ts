@@ -6,6 +6,19 @@ export type LimitedJsonResult =
   | { ok: true; body: unknown }
   | { ok: false; reason: 'too_large' | 'invalid_json' };
 
+const encoder = new TextEncoder();
+
+function requestChunkBytes(value: unknown): Uint8Array {
+  // EO readers also return strings and raw buffers; TypedArray.set does not
+  // copy bytes from an ArrayBuffer or DataView directly.
+  if (typeof value === 'string') return encoder.encode(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  throw new TypeError('Unsupported request body chunk type');
+}
+
 export async function readRequestBytesWithLimit(request: Request, maxBytes: number): Promise<LimitedBodyResult> {
   const declaredLength = Number(request.headers.get('Content-Length') || '0');
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
@@ -18,16 +31,20 @@ export async function readRequestBytesWithLimit(request: Request, maxBytes: numb
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return { ok: false, reason: 'too_large' };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = requestChunkBytes(value);
+      total += chunk.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: 'too_large' };
+      }
+      chunks.push(chunk);
     }
-    chunks.push(value);
+  } finally {
+    reader.releaseLock();
   }
 
   const bytes = new Uint8Array(total);
