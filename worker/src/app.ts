@@ -1,14 +1,17 @@
 /**
- * ESA VPS Monitor - 阿里云 ESA 函数和 Pages 版本
- * Hono + ESA 边缘存储（EdgeKV）
+ * EO VPS Monitor - 腾讯云 EdgeOne Pages 版本
+ * Hono + 原生 KV；保留原 ESA 测试入口的兼容行为。
  */
 
 import { Hono } from 'hono';
 import { APP_VERSION, BUILD_COMMIT } from './utils/app-version';
 import { shortGitSha } from './utils/update-check';
-import { readEnvString } from './platform/env';
+import { readAdminRecoveryKey, readEnvString } from './platform/env';
 import { createAppServices, type AppServices } from './platform/context';
-import { isEdgeKvAvailable } from './platform/kv';
+import { isEdgeOneKvAvailable } from './platform/kv';
+import unixInstaller from '../../agent/install.sh';
+import linuxInstaller from '../../agent/install-linux.sh';
+import windowsInstaller from '../../agent/install-windows.ps1';
 import { readCore } from './store/core';
 import { maybeRunMaintenance } from './services/maintenance';
 import { authRoutes } from './routes/auth';
@@ -19,8 +22,14 @@ import { adminRoutes } from './routes/admin';
 import { adminThemeRoutes, publicThemeRoutes } from './routes/theme';
 import { services, type HonoEnv } from './routes/common';
 
-export const REPOSITORY = 'sbaliyun/esa-vps-monitor';
+export const REPOSITORY = 'sbaliyun/cf-vps-monitor';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPOSITORY}/main/agent`;
+
+function agentInstaller(env: Record<string, unknown>, source: string): string {
+  const value = typeof env.AGENT_REPOSITORY === 'string' ? env.AGENT_REPOSITORY.trim() : '';
+  const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) ? value : REPOSITORY;
+  return source.replaceAll('sbaliyun/esa-vps-monitor', repository).replaceAll('sbaliyun/cf-vps-monitor', repository);
+}
 
 const SECURITY_HEADERS: Record<string, string> = {
   'X-Content-Type-Options': 'nosniff',
@@ -51,7 +60,8 @@ export async function resolveCronSecret(env: Record<string, unknown>): Promise<s
   const jwt = typeof env.JWT_SECRET === 'string' ? env.JWT_SECRET.trim() : '';
   if (new TextEncoder().encode(jwt).byteLength < 32) return '';
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(jwt), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode('esa-vps-monitor/cron/v1')));
+  const purpose = env.EDGEONE ? 'eo-vps-monitor/cron/v1' : 'esa-vps-monitor/cron/v1';
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(purpose)));
   return Array.from(signature.slice(0, 16), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
@@ -79,15 +89,21 @@ export function createApp(): Hono<HonoEnv> {
     if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
   });
 
-  app.get('/agent/install.sh', (c) => c.redirect(`${RAW_BASE}/install.sh`, 302));
-  app.get('/agent/install-linux.sh', (c) => c.redirect(`${RAW_BASE}/install-linux.sh`, 302));
-  app.get('/agent/install-windows.ps1', (c) => c.redirect(`${RAW_BASE}/install-windows.ps1`, 302));
+  for (const [name, source] of [
+    ['install.sh', unixInstaller], ['install-linux.sh', linuxInstaller], ['install-windows.ps1', windowsInstaller],
+  ]) {
+    app.get(`/agent/${name}`, (c) => c.env.EDGEONE
+      ? new Response(agentInstaller(c.env, source), { headers: {
+        'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store',
+      } })
+      : c.redirect(`${RAW_BASE}/${name}`, 302));
+  }
 
   app.get('/ping', (c) => c.text('pong'));
 
   app.get('/api/version', (c) => {
     const commit = shortGitSha(readEnvString(c.env, 'CURRENT_GIT_COMMIT') || BUILD_COMMIT);
-    return c.json({ version: APP_VERSION, name: 'ESA VPS Monitor', hash: commit || 'dev', build: commit || `release-${APP_VERSION}`, platform: 'aliyun-esa' });
+    return c.json({ version: APP_VERSION, name: c.env.EDGEONE ? 'EO VPS Monitor' : 'ESA VPS Monitor', hash: commit || 'dev', build: commit || `release-${APP_VERSION}`, platform: c.env.EDGEONE ? 'tencent-edgeone' : 'aliyun-esa' });
   });
 
   // 部署自检：不暴露任何密钥，只报告配置是否就绪。
@@ -104,12 +120,14 @@ export function createApp(): Hono<HonoEnv> {
     } catch (error) {
       kvError = error instanceof Error ? error.message : String(error);
     }
+    const recoveryOk = !c.env.EDGEONE || Boolean(readAdminRecoveryKey(c.env));
     return c.json({
-      ok: jwtOk && kvOk,
-      platform: 'aliyun-esa',
+      ok: jwtOk && kvOk && recoveryOk,
+      platform: c.env.EDGEONE ? 'tencent-edgeone' : 'aliyun-esa',
       checks: [
         { key: 'jwt_secret', status: jwtOk ? 'ok' : 'error', detail: jwtOk ? 'JWT_SECRET 已配置' : '缺少 JWT_SECRET 或不足 32 字节' },
-        { key: 'edge_kv', status: kvOk ? 'ok' : 'error', detail: kvOk ? (isEdgeKvAvailable() ? `EdgeKV 命名空间可用：${readEnvString(c.env, 'KV_NAMESPACE') || 'esa-vps-monitor'}` : '本地内存 KV') : kvError },
+        { key: 'edge_kv', status: kvOk ? 'ok' : 'error', detail: kvOk ? (isEdgeOneKvAvailable(c.env.MONITOR_KV) ? 'EdgeOne KV 绑定 MONITOR_KV 可读' : '本地内存 KV') : kvError },
+        ...(c.env.EDGEONE ? [{ key: 'admin_recovery_key', status: recoveryOk ? 'ok' : 'error', detail: recoveryOk ? 'ADMIN_RECOVERY_KEY 已配置' : '请设置至少 32 字节的独立 ADMIN_RECOVERY_KEY' }] : []),
         { key: 'admin', status: adminPresent ? 'ok' : 'warning', detail: adminPresent ? '管理员已创建' : '尚未创建管理员，请访问 /login' },
       ],
     });
@@ -141,13 +159,15 @@ export function createApp(): Hono<HonoEnv> {
   app.notFound((c) => {
     const url = new URL(c.req.url);
     if (!url.pathname.startsWith('/api/') && url.pathname !== '/ping') {
-      return c.text('ESA VPS Monitor: 前端资源不存在。请确认 esa.jsonc 的 assets.directory 指向 frontend/dist。', 404);
+      return c.text('EO VPS Monitor: 前端资源不存在。请运行 npm run build 并部署 edgeone-dist。', 404);
     }
     return c.json({ error: 'Not Found' }, 404);
   });
 
   app.onError((error, c) => {
     console.error('[app] unhandled error:', error instanceof Error ? error.stack || error.message : String(error));
+    const status = (error as Error & { status?: number }).status;
+    if (status === 413) return c.json({ error: '保存内容超过 EdgeOne KV 的应用大小限制（900 KiB），请减少数据量。' }, 413);
     return c.json({ error: '服务器内部错误' }, 500);
   });
 

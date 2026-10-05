@@ -45,7 +45,7 @@ export default function Layout() {
   const { displayTheme, setDisplayThemeFromSettings, toggleDisplayTheme } = useDisplayTheme();
   const location = useLocation();
   const navigate = useNavigate();
-  const [siteTitle, setSiteTitle] = useState("ESA VPS Monitor");
+  const [siteTitle, setSiteTitle] = useState("EO VPS Monitor");
   const [siteSubtitle, setSiteSubtitle] = useState<string | null>(null);
   const [siteLogoUrl, setSiteLogoUrl] = useState("");
   const [bgUrlDesktop, setBgUrlDesktop] = useState("");

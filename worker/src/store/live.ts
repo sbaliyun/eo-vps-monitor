@@ -2,12 +2,13 @@
  * 实时状态：替代原 Durable Object 的在线状态与观看者跟踪。
  *
  * 每个节点的最新状态存两份：
- * - `lv_<uuid>`：只有该节点自己写，是权威数据，不会被别的节点覆盖；
+ * - `lv_<uuid>`：仅该节点的上报写入，减少不同节点之间的覆盖；
  * - `live_<n>` 分片：所有节点读-改-写的汇总，一次读取就能拿到全部节点，作为兜底。
  *
  * EdgeKV 在各边缘节点之间最终一致，不同地区的节点同时读-改-写同一分片时，后写者会用
  * 旧副本覆盖别人的条目（表现为在线机器显示离线）。所以读取时先取分片，再在本请求的
  * KV 预算内读取各节点自己的键，按上报时间取较新的一份；看起来离线或缓存最旧的节点优先。
+ * 这只能尽力校正：单节点请求跨边缘副本仍可能用旧值覆盖自身状态，读取也可能暂时看不到新值。
  */
 
 import type { AppServices } from '../platform/context';
@@ -70,7 +71,7 @@ function keepNewer(entries: Map<string, LiveEntry>, uuid: string, entry: LiveEnt
 
 export interface LiveReadResult {
   entries: Map<string, LiveEntry>;
-  /** 本次（或 maxAgeMs 内）确实读过节点自己键的节点，可据此确认离线。 */
+  /** 本次（或 maxAgeMs 内）读过节点自己键的节点；该边缘副本仍可能过期。 */
   verified: Set<string>;
 }
 
@@ -106,7 +107,7 @@ export async function readLiveState(
       continue;
     }
     const entry = entries.get(client.uuid);
-    // 看起来离线（或从没见过）的节点最可能是被覆盖的，优先刷新。
+    // 优先刷新看起来离线或从没见过的节点，尽力缩短状态延迟。
     const priority = !entry || entry.exp <= now ? 0 : 1;
     candidates.push({ uuid: client.uuid, priority, at: cached?.at ?? 0 });
   }
@@ -130,7 +131,8 @@ export async function readLiveEntries(
 }
 
 /**
- * 更新单个节点的实时条目：先写节点自己的键（权威），再在预算允许时更新汇总分片。
+ * 更新单个节点的实时条目：先写节点自己的键，再在预算允许时更新汇总分片。
+ * 两次写入没有事务或 CAS 保证，跨边缘请求可能读到旧副本。
  */
 export async function writeLiveEntry(
   app: AppServices,

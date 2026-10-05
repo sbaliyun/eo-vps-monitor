@@ -32,7 +32,7 @@ export const REMOVED_SETTING_KEYS = new Set([
 export const SETTING_SCHEMA = {
   site_title: {
     type: 'string',
-    defaultValue: 'ESA VPS Monitor',
+    defaultValue: 'EO VPS Monitor',
     public: true,
     maxLength: 128,
   },
@@ -249,7 +249,7 @@ export const SETTING_SCHEMA = {
   },
   email_smtp_from_name: {
     type: 'string',
-    defaultValue: 'ESA VPS Monitor',
+    defaultValue: 'EO VPS Monitor',
     public: false,
     maxLength: 128,
   },

@@ -9,11 +9,13 @@ import {
   validateThemeConfig,
 } from '../utils/theme-package';
 import { readJsonWithLimit, readRequestBytesWithLimit } from '../utils/request-body';
+import { EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES } from '../utils/edgeone-limits';
 import { adminSettingsOf, mutateCore, readCore } from '../store/core';
 import type { CoreDoc, StoredTheme } from '../store/types';
 import { deleteThemeBundles, planThemeBundles, readThemeAsset, writeThemeBundles } from '../store/themes';
 import { queueAudit } from '../services/notify';
 import { services, type AppContext, type HonoEnv } from './common';
+import { isEdgeOne } from './auth';
 
 type ThemeContext = AppContext;
 
@@ -108,7 +110,7 @@ function builtinThemeRecord(short: typeof BUILTIN_THEMES[number]['short']): db.T
     short: builtin.short,
     description: builtin.description,
     version: '',
-    author: 'ESA VPS Monitor',
+    author: 'EO VPS Monitor',
     url: '',
     preview: '',
     style: BUILTIN_STYLE_PATH,
@@ -122,7 +124,7 @@ function builtinThemeRecord(short: typeof BUILTIN_THEMES[number]['short']): db.T
     name: builtin.name,
     description: builtin.description,
     version: '',
-    author: 'ESA VPS Monitor',
+    author: 'EO VPS Monitor',
     url: '',
     preview_path: '',
     style_path: BUILTIN_STYLE_PATH,
@@ -204,12 +206,19 @@ adminThemeRoutes.get('/', async (c) => {
   const uploadedSummaries = core.themes
     .filter(theme => !isReservedThemeShort(theme.short))
     .map(theme => themeSummary(theme, activeTheme));
-  return c.json({ active_theme: activeTheme, data: [...builtinSummaries, ...uploadedSummaries] });
+  return c.json({
+    active_theme: activeTheme,
+    data: [...builtinSummaries, ...uploadedSummaries],
+    ...(isEdgeOne(c) ? { upload_max_bytes: EDGEONE_MAX_UPLOAD_FILE_BYTES } : {}),
+  });
 });
 
 adminThemeRoutes.post('/upload', async (c) => {
-  const body = await readRequestBytesWithLimit(c.req.raw, MAX_THEME_ZIP_BYTES + 4096);
-  if (!body.ok) return c.json({ error: `主题包不能超过 ${MAX_THEME_ZIP_BYTES} 字节` }, 413);
+  const edgeOne = isEdgeOne(c);
+  const maxZipBytes = edgeOne ? EDGEONE_MAX_UPLOAD_FILE_BYTES : MAX_THEME_ZIP_BYTES;
+  const maxRequestBytes = edgeOne ? EDGEONE_MAX_UPLOAD_REQUEST_BYTES : MAX_THEME_ZIP_BYTES + 4096;
+  const body = await readRequestBytesWithLimit(c.req.raw, maxRequestBytes);
+  if (!body.ok) return c.json({ error: edgeOne ? 'EdgeOne 主题上传请求不能超过 900 KiB，ZIP 文件不能超过 800 KiB' : `主题包不能超过 ${maxZipBytes} 字节` }, 413);
   let form: FormData;
   try {
     form = await new Response(body.bytes, { headers: { 'Content-Type': c.req.header('Content-Type') || '' } }).formData();
@@ -219,7 +228,7 @@ adminThemeRoutes.post('/upload', async (c) => {
   const file = form.get('file');
   if (!isUploadedFile(file)) return c.json({ error: '请上传主题 zip 文件' }, 400);
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.byteLength > MAX_THEME_ZIP_BYTES) return c.json({ error: `主题包不能超过 ${MAX_THEME_ZIP_BYTES} 字节` }, 413);
+  if (bytes.byteLength > maxZipBytes) return c.json({ error: edgeOne ? 'EdgeOne 主题 ZIP 文件不能超过 800 KiB，请压缩后上传' : `主题包不能超过 ${maxZipBytes} 字节` }, 413);
   let parsed: ReturnType<typeof parseThemeZip>;
   try {
     parsed = parseThemeZip(bytes);

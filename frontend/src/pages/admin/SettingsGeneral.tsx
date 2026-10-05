@@ -311,7 +311,7 @@ export default function SettingsGeneral() {
   return (
     <Flex direction="column" gap="4">
       {loadFailure}
-      <SettingCard title="采集与记录策略" description="统一设置 Agent 采集、历史记录与 ESA 用量估算" defaultOpen>
+      <SettingCard title="采集与记录策略" description="统一设置 Agent 采集、历史记录与 EdgeOne 用量估算" defaultOpen>
         <div className="general-settings-workspace">
           <section className="general-settings-manual-panel" aria-labelledby="general-settings-manual-title">
             <Flex align="center" justify="between" gap="2" wrap="wrap" className="general-settings-section-heading">
@@ -351,7 +351,7 @@ export default function SettingsGeneral() {
               />
               <SettingInput
                 label="有人观看时 · 上报间隔（秒）"
-                description="前台有访客在看时 Agent 的上报间隔。ESA 上每次上报都是一次函数请求和一次 KV 写入，越小越实时、用量越大"
+                description="前台有访客在看时 Agent 的上报间隔。缩短间隔会增加函数请求与 KV 写入；跨节点 KV 缓存同步可能延迟约 60 秒"
                 value={getSettingValue(settings, 'live_poll_active_interval_sec', String(DEFAULT_ACTIVE_SAMPLE_SEC))}
                 onChange={(value) => updateSetting('live_poll_active_interval_sec', value)}
                 type="number"
@@ -369,7 +369,7 @@ export default function SettingsGeneral() {
               />
               <SettingInput
                 label="观看状态保持时长（秒）"
-                description="访客最后一次轮询后，Agent 保持高频上报多久。Agent 最迟约 60 秒内感知到有人观看"
+                description="访客最后一次轮询后，Agent 保持高频上报多久。观看状态在 Agent 拉取策略后生效，跨节点 KV 缓存可能延迟同步"
                 value={getSettingValue(settings, 'live_poll_active_max_duration_sec', String(DEFAULT_VIEWER_TTL_SEC))}
                 onChange={(value) => updateSetting('live_poll_active_max_duration_sec', value)}
                 type="number"
@@ -378,7 +378,7 @@ export default function SettingsGeneral() {
               />
               <SettingInput
                 label="历史记录间隔（秒）"
-                description="每个节点每隔多久写入一个历史点（一次 KV 写入），最少 30 秒"
+                description="每个节点记录历史点的间隔，最少 30 秒；历史按节点打包保存到 KV"
                 value={getSettingValue(settings, 'record_persist_interval_sec', String(DEFAULT_RECORD_PERSIST_SEC))}
                 onChange={(value) => updateSetting('record_persist_interval_sec', value)}
                 type="number"
@@ -396,7 +396,7 @@ export default function SettingsGeneral() {
               />
               <SettingInput
                 label="离线确认轮数（轮）"
-                description="连续多少轮维护判定为离线才发出告警，任意一轮在线立即清零。维护约每分钟运行一次"
+                description="连续多少轮维护判定为离线才发出告警，任意一轮在线立即清零。有请求时维护约每分钟运行一次"
                 value={getSettingValue(settings, 'offline_confirm_rounds', String(DEFAULT_OFFLINE_CONFIRM_ROUNDS))}
                 onChange={(value) => updateSetting('offline_confirm_rounds', value)}
                 type="number"
@@ -412,10 +412,10 @@ export default function SettingsGeneral() {
                 <Flex direction="column" gap="1" style={{ minWidth: 0, flex: '1 1 360px' }}>
                   <Flex align="center" gap="2">
                     <Gauge size={16} />
-                    <Text id="general-settings-calculated-title" size="2" weight="bold">ESA 用量估算</Text>
+                    <Text id="general-settings-calculated-title" size="2" weight="bold">EdgeOne 用量估算</Text>
                   </Flex>
                   <Text size="1" color="gray" className="quota-reference-line">
-                    按当前输入即时估算函数请求与 EdgeKV 读写次数，实际计费以阿里云 ESA 控制台用量为准。
+                    按当前输入估算函数请求、KV 读写次数与存储量，实际额度和计费以腾讯云控制台为准。
                   </Text>
                 </Flex>
                 <Flex align="center" gap="2" wrap="wrap" className="quota-estimate-actions">
@@ -468,7 +468,7 @@ export default function SettingsGeneral() {
               <Flex direction="column" gap="1" mt="3">
                 <Flex align="center" gap="2"><Clock size={14} /><Text size="2" weight="bold">外部定时触发（可选）</Text></Flex>
                 <Text size="1" color="gray">
-                  ESA 函数没有定时触发器，维护任务（离线/到期告警、网站检测）由 Agent 拉取策略和访客访问顺带触发。
+                  本版本的维护任务（离线/到期告警、网站检测）由 Agent 拉取策略和访客访问触发。
                   若所有节点都离线仍需告警，可用任意外部定时服务（如 GitHub Actions、cron-job.org）每 1~5 分钟请求下面的地址：
                 </Text>
                 <Text size="1" style={{ fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-all' }}>{cronUrl || '（需要配置 JWT_SECRET 或 CRON_SECRET）'}</Text>
@@ -483,7 +483,7 @@ export default function SettingsGeneral() {
           <Dialog.Description size="2" mb="3">
             {explainDialog === 'cleanup'
               ? '维护清理会按审计日志保留时长删除过期日志。节点历史本身按保留时长滚动，不需要手动清理。'
-              : '立即运行一轮定时维护：网站检测、离线与到期告警检查。受单次请求的 KV 与出站请求额度限制，未完成的部分会在下一轮继续。'}
+              : '立即运行一轮维护：网站检测、离线与到期告警检查。应用默认以 8 次 KV 操作和 4 次出站请求作为每次请求的保守预算，未完成的部分会在下一轮继续。'}
           </Dialog.Description>
           <Flex justify="end" gap="2">
             <Button variant="soft" color="gray" onClick={() => setExplainDialog(null)}>取消</Button>

@@ -10,7 +10,7 @@ import { generateMfaToken, verifyMfaToken } from '../auth/mfa-token';
 import { verifyTotpCode } from '../auth/totp';
 import { hashPassword, needsPasswordRehash, validateAdminPasswordStrength, verifyPassword } from '../auth/password';
 import { clearAdminSessionCookie, ensureAdminCsrfCookie, getAdminSessionToken, setAdminSessionCookie, verifyAdminCsrfToken } from '../auth/session';
-import { readEnvString } from '../platform/env';
+import { readAdminRecoveryKey, readEnvString } from '../platform/env';
 import { findUserByUsername, findUserByUuid, mutateCore, readCore } from '../store/core';
 import { clearObserved, loadRateLimits, recordFailures, retryAfterSeconds } from '../store/ratelimit';
 import { queueAudit, queueThrottledAudit } from '../services/notify';
@@ -25,6 +25,16 @@ const MAX_MFA_CODE_LENGTH = 128;
 const MAX_RECOVERY_KEY_LENGTH = 8192;
 const MAX_ADMIN_USERNAME_BYTES = 64;
 const DUMMY_ADMIN_PASSWORD_HASH = 'pbkdf2_sha256$10000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+
+export const EDGEONE_MFA_MESSAGE = '当前 EdgeOne KV 版本暂不支持双重身份验证。请使用账号密码登录；已有双重验证账号请通过登录页「忘记密码」使用恢复密钥重置管理员。';
+
+export function isEdgeOne(c: AppContext): boolean {
+  return c.env.EDGEONE === true || readEnvString(c.env, 'EDGEONE') === 'true';
+}
+
+export function edgeOneMfaUnavailable(c: AppContext): Response {
+  return c.json({ code: 'MFA_UNSUPPORTED_ON_EDGEONE', error: EDGEONE_MFA_MESSAGE }, 503);
+}
 
 function normalizeLoginUsername(username: string): string {
   return username.trim().toLowerCase().slice(0, MAX_LOGIN_USERNAME_LENGTH);
@@ -82,13 +92,24 @@ async function timingSafeEqualString(actual: string, expected: string): Promise<
 }
 
 export function recoveryKeyOf(c: AppContext): string {
-  return readEnvString(c.env, 'ADMIN_RECOVERY_KEY') || readEnvString(c.env, 'JWT_SECRET');
+  // EdgeOne setup and recovery require a separate secret; never reuse the session key.
+  return readAdminRecoveryKey(c.env);
 }
 
 authRoutes.get('/admin/recovery/status', async (c) => {
   const limited = publicRateLimit(c, 'admin-recovery-status', 30);
   if (limited) return limited;
   const core = await readCore(services(c), 0);
+  if (isEdgeOne(c)) {
+    const recoveryConfigured = Boolean(recoveryKeyOf(c));
+    return c.json({
+      admin_present: core.users.length > 0,
+      recoverable: recoveryConfigured && core.users.length <= 1,
+      recovery_key_configured: recoveryConfigured,
+      mfa_supported: false,
+      platform: 'edgeone',
+    });
+  }
   return c.json({ admin_present: core.users.length > 0, recoverable: core.users.length <= 1 });
 });
 
@@ -110,9 +131,15 @@ authRoutes.post('/admin/recovery', async (c) => {
   if (passwordError) return c.json({ error: passwordError }, 400);
 
   const expectedKey = recoveryKeyOf(c);
+  if (isEdgeOne(c) && !expectedKey) {
+    return c.json({ code: 'ADMIN_RECOVERY_KEY_REQUIRED', error: '请在 EdgeOne 项目中设置至少 32 字节、与 JWT_SECRET 不同的 ADMIN_RECOVERY_KEY 后重新部署' }, 503);
+  }
   if (!expectedKey || new TextEncoder().encode(readEnvString(c.env, 'JWT_SECRET')).byteLength < 32) return jwtMisconfigured(c);
   if (!recoveryKey || recoveryKey.length > MAX_RECOVERY_KEY_LENGTH || !await timingSafeEqualString(recoveryKey, expectedKey)) {
-    return c.json({ error: '恢复密钥无效（填写部署时设置的 ADMIN_RECOVERY_KEY，未设置时为 JWT_SECRET）' }, 403);
+    const message = isEdgeOne(c)
+      ? '恢复密钥无效，请填写部署时设置的 ADMIN_RECOVERY_KEY'
+      : '恢复密钥无效（填写部署时设置的 ADMIN_RECOVERY_KEY，未设置时为 JWT_SECRET）';
+    return c.json({ error: message }, 403);
   }
 
   const app = services(c);
@@ -181,7 +208,12 @@ authRoutes.post('/login', async (c) => {
     await verifyPassword(password, DUMMY_ADMIN_PASSWORD_HASH);
     await recordFailures(app, buckets, app.now());
     auditLoginFailure(c, username, ip, 'unknown_user');
-    if (core.users.length === 0) return c.json({ error: '请先在登录页创建管理员账号' }, 409);
+    if (core.users.length === 0) {
+      const message = isEdgeOne(c)
+        ? '请先通过登录页「忘记密码」入口，使用部署时设置的 ADMIN_RECOVERY_KEY 创建管理员账号'
+        : '请先在登录页创建管理员账号';
+      return c.json({ error: message }, 409);
+    }
     return c.json({ error: '用户名或密码错误' }, 401);
   }
   if (!await verifyPassword(password, user.passwd)) {
@@ -197,6 +229,7 @@ authRoutes.post('/login', async (c) => {
     });
   }
   if (user.totp_enabled_at && user.totp_secret_enc) {
+    if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
     try {
       const challenge = await generateMfaToken({
         userId: user.uuid,
@@ -215,6 +248,10 @@ authRoutes.post('/login', async (c) => {
 
 /** 校验 TOTP 或恢复码，并在 core 中消费（防重放）。 */
 export async function verifyAndConsumeMfa(c: AppContext, user: User, method: 'totp' | 'recovery_code', code: string): Promise<boolean> {
+  if (isEdgeOne(c)) {
+    // KV read/modify/write cannot atomically consume a TOTP step or recovery code.
+    throw Object.assign(new Error(EDGEONE_MFA_MESSAGE), { status: 503 });
+  }
   const app = services(c);
   const env = c.env as { JWT_SECRET?: string };
   if (!user.totp_enabled_at || !user.totp_secret_enc) return false;
@@ -247,6 +284,7 @@ export async function verifyAndConsumeMfa(c: AppContext, user: User, method: 'to
 }
 
 authRoutes.post('/login/mfa', async (c) => {
+  if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
   const parsed = await readJsonObject(c, 8 * 1024);
   if (!parsed.ok) return parsed.response;
   const challenge = typeof parsed.body.challenge === 'string' ? parsed.body.challenge : '';

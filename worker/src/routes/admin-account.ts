@@ -13,7 +13,7 @@ import { clearMfaStepUpCookie, setAdminSessionCookie, setMfaStepUpCookie } from 
 import { findUserByUsername, findUserByUuid, mutateCore, readCore } from '../store/core';
 import { clearObserved, loadRateLimits, recordFailures, retryAfterSeconds } from '../store/ratelimit';
 import { queueAudit } from '../services/notify';
-import { auditLoginFailure, mfaRateLimitBuckets, verifyAndConsumeMfa } from './auth';
+import { auditLoginFailure, edgeOneMfaUnavailable, EDGEONE_MFA_MESSAGE, isEdgeOne, mfaRateLimitBuckets, verifyAndConsumeMfa } from './auth';
 import { clientIp, readJsonObject, services, type AppContext, type HonoEnv } from './common';
 
 export const accountRoutes = new Hono<HonoEnv>();
@@ -66,6 +66,7 @@ accountRoutes.get('/account/mfa', async (c) => {
   const user = await currentUser(c);
   if (!user) return c.json({ error: '用户不存在' }, 404);
   return c.json({
+    ...(isEdgeOne(c) ? { supported: false, unavailable_reason: EDGEONE_MFA_MESSAGE } : {}),
     enabled: Boolean(user.totp_enabled_at && user.totp_secret_enc),
     enabled_at: user.totp_enabled_at,
     recovery_codes_remaining: Array.isArray(user.recovery_code_hashes) ? user.recovery_code_hashes.length : 0,
@@ -73,6 +74,7 @@ accountRoutes.get('/account/mfa', async (c) => {
 });
 
 accountRoutes.post('/account/mfa/setup', async (c) => {
+  if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
   const parsed = await readJsonObject(c);
   if (!parsed.ok) return parsed.response;
   const password = typeof parsed.body.password === 'string' ? parsed.body.password : '';
@@ -101,6 +103,7 @@ accountRoutes.post('/account/mfa/setup', async (c) => {
 });
 
 accountRoutes.post('/account/mfa/enable', async (c) => {
+  if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
   const parsed = await readJsonObject(c);
   if (!parsed.ok) return parsed.response;
   const setupToken = typeof parsed.body.setup_token === 'string' ? parsed.body.setup_token : '';
@@ -139,6 +142,7 @@ accountRoutes.post('/account/mfa/enable', async (c) => {
 });
 
 accountRoutes.post('/account/mfa/recovery-codes', async (c) => {
+  if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
   const user = await currentUser(c);
   if (!user) return c.json({ error: '用户不存在' }, 404);
   if (!user.totp_enabled_at) return c.json({ error: '尚未启用双重身份验证' }, 409);
@@ -169,6 +173,7 @@ accountRoutes.post('/account/mfa/disable', async (c) => {
 });
 
 accountRoutes.post('/account/mfa/step-up', async (c) => {
+  if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
   const parsed = await readJsonObject(c);
   if (!parsed.ok) return parsed.response;
   const method = parsed.body.method === 'totp' || parsed.body.method === 'recovery_code' ? parsed.body.method : null;

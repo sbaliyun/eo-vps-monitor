@@ -62,6 +62,7 @@ type ThemeCard = {
 type ThemesResponse = {
   active_theme: string;
   data: ThemeCard[];
+  upload_max_bytes?: number;
 };
 
 function refreshActiveThemeStylesheet() {
@@ -133,6 +134,7 @@ export default function AdminThemes() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [themes, setThemes] = useState<ThemeCard[]>([]);
+  const [uploadMaxBytes, setUploadMaxBytes] = useState<number | null>(null);
   const [editing, setEditing] = useState<ThemeCard | null>(null);
   const [editConfig, setEditConfig] = useState<Record<string, unknown>>({});
   const [customCss, setCustomCss] = useState('');
@@ -153,6 +155,7 @@ export default function AdminThemes() {
     try {
       const result = await apiFetch('/admin/themes') as ThemesResponse;
       setThemes(Array.isArray(result.data) ? result.data : []);
+      setUploadMaxBytes(typeof result.upload_max_bytes === 'number' ? result.upload_max_bytes : null);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '主题列表加载失败');
     } finally {
@@ -170,6 +173,11 @@ export default function AdminThemes() {
 
   async function handleUpload(file: File | null) {
     if (!file) return;
+    if (uploadMaxBytes && file.size > uploadMaxBytes) {
+      toast.error(`EdgeOne 主题 ZIP 文件不能超过 ${Math.floor(uploadMaxBytes / 1024)} KiB，请压缩后上传`);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     const form = new FormData();
     form.append('file', file);
     setSaving(true);
@@ -402,6 +410,7 @@ export default function AdminThemes() {
       <Flex className="admin-theme-page-actions" justify="between" gap="3" wrap="wrap">
         <Text as="p" size="1" color="gray" className="admin-theme-package-guidance">
           主题包根目录需要 cf-monitor-theme.json；支持 CSS、图片、JSON 和 .woff2 字体；配置项支持 title、switch、select、number、string、richtext、color、image、range。
+          {uploadMaxBytes ? ` EdgeOne ZIP 文件最大 ${Math.floor(uploadMaxBytes / 1024)} KiB，上传请求最大 900 KiB。` : ''}
         </Text>
         <Button className="admin-theme-upload-action" size="2" disabled={saving} onClick={() => fileInputRef.current?.click()}>
           <Upload size={14} />上传主题包

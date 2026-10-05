@@ -1,12 +1,13 @@
 /**
  * 定时维护：替代 Cloudflare Cron Triggers。
  *
- * ESA 函数没有定时触发器，维护任务由以下请求顺带触发（全局约每分钟一次）：
+ * 本版本的维护任务由以下请求触发（本地节流与 KV 标记尽力限制为约每分钟一次）：
  *  - Agent 拉取策略（/api/clients/policy，空闲时约每分钟一次）；
  *  - 访客轮询实时数据；
  *  - 外部定时器调用 /api/cron（可选，见 README）。
  *
  * 每次运行受单个请求的 KV 操作数与子请求数限制，步骤轮转执行，做不完的留到下次。
+ * KV 没有 CAS，跨边缘请求可能同时取得旧标记并重复执行检测或通知；标记不是全局互斥锁。
  */
 
 import type { AppServices } from '../platform/context';
@@ -62,7 +63,7 @@ function normalizeLease(doc: MaintenanceDoc | null): MaintenanceDoc {
 
 /**
  * 尝试执行一轮维护。force=true 用于管理员手动触发与外部定时器，
- * 仍然遵守租约，避免两处同时运行。
+ * 仍然检查 KV 节流标记，但最终一致副本不能保证不同边缘只运行一次。
  */
 export async function maybeRunMaintenance(app: AppServices, trigger: string, options: { force?: boolean } = {}): Promise<MaintenanceResult> {
   const now = app.now();

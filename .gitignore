@@ -11,8 +11,8 @@ agent/dist/
 release/
 *.tsbuildinfo
 
-# ESA local state and secrets
-# .dev/：esa-cli 打包产物（pub.js）与本地开发服务器的 KV 持久化文件
+# Local state and secrets
+# .dev/ contains the development server's KV data.
 .dev/
 .esa/
 .env
@@ -68,3 +68,9 @@ AGENTS.md
 
 # Local AI knowledge base (never commit)
 .ai-knowledge/
+
+# EdgeOne generated output and CLI state
+edgeone-dist/
+.edgeone/
+.eo/
+eo-vps-monitor-encrypted-backup-*.json

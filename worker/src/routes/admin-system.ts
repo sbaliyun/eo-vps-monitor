@@ -21,6 +21,7 @@ import {
   type BackupData,
 } from '../utils/backup';
 import { hashAgentToken } from '../utils/client';
+import { EDGEONE_MAX_CRYPTO_BYTES, EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES } from '../utils/edgeone-limits';
 import { NOTIFICATION_DISPATCH_SETTING_KEYS, pickNotificationSettingOverrides } from '../utils/notification-dispatch';
 import { TELEGRAM_MESSAGE_MAX_CHARS } from '../utils/telegram';
 import { WEBHOOK_MESSAGE_MAX_CHARS } from '../utils/webhook';
@@ -29,7 +30,7 @@ import { formatAppVersion, normalizeGitSha, repositoryUrlFromRepositoryUrl, shor
 import { buildResourceEstimates, estimateKvStorageBytes } from '../utils/capacity-estimate';
 import { buildQuotaReference } from '../utils/quota';
 import { errorDetail, readLocalHealthEvents } from '../utils/observability';
-import { isEdgeKvAvailable } from '../platform/kv';
+import { isEdgeOneKvAvailable } from '../platform/kv';
 import { readEnvString } from '../platform/env';
 import { SubrequestBudgetExceeded } from '../platform/context';
 import { adminSettingsOf, defaultStoredClient, mutateCore, readCore, toClientView } from '../store/core';
@@ -41,6 +42,7 @@ import { pruneAuditLogs } from '../store/audit';
 import { maybeRunMaintenance } from '../services/maintenance';
 import { queueAudit, sendNotification } from '../services/notify';
 import { readJsonObject, services, type AppContext, type HonoEnv } from './common';
+import { isEdgeOne } from './auth';
 
 export const systemAdminRoutes = new Hono<HonoEnv>();
 
@@ -61,7 +63,7 @@ function currentCommit(c: AppContext): string {
 
 async function fetchGitHubJson<T>(c: AppContext, path: string): Promise<T> {
   const response = await services(c).subrequests.fetch(`https://api.github.com/${path}`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'esa-vps-monitor-update-check' },
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'eo-vps-monitor-update-check' },
   });
   if (!response.ok) throw new Error(`GitHub API returned ${response.status}`);
   return await response.json() as T;
@@ -73,15 +75,25 @@ systemAdminRoutes.get('/update-check', async (c) => {
     const core = await readCore(services(c));
     const repositoryUrl = adminSettingsOf(core).update_repository_url;
     const commitSha = currentCommit(c);
-    const cacheKey = `${OFFICIAL_UPDATE_REPOSITORY}:${repositoryUrl}:${commitSha}`;
+    const deploymentUrl = repositoryUrlFromRepositoryUrl(repositoryUrl);
+    const edgeOne = c.env.EDGEONE === true || c.env.EDGEONE === 'true';
+    // A migrated deployment must never offer the original ESA code as an update.
+    const sourceRepository = edgeOne ? deploymentUrl?.replace('https://github.com/', '') : OFFICIAL_UPDATE_REPOSITORY;
+    if (!sourceRepository) return c.json({
+      current_version: formatAppVersion(APP_VERSION), latest_version: '',
+      current_commit: shortGitSha(commitSha), latest_commit: '', has_update: false,
+      source_url: '', upgrade_url: null, repository_url: null, published_at: '',
+      title: '更新检查未配置', body: '请填写自己的 EO 适配仓库地址。私有仓库不支持匿名更新检查。',
+    });
+    const cacheKey = `${sourceRepository}:${repositoryUrl}:${commitSha}`;
     const cached = updateCheckCache.get(cacheKey);
     if (c.req.query('refresh') !== '1' && cached && cached.expiresAt > now) return c.json(cached.value);
     type Commit = { sha?: string; html_url?: string; commit?: { message?: string; committer?: { date?: string }; author?: { date?: string } } };
-    const commit = await fetchGitHubJson<Commit>(c, `repos/${OFFICIAL_UPDATE_REPOSITORY}/commits/${OFFICIAL_UPDATE_BRANCH}`);
+    const commit = await fetchGitHubJson<Commit>(c, `repos/${sourceRepository}/commits/${OFFICIAL_UPDATE_BRANCH}`);
     const latestCommit = normalizeGitSha(commit.sha || '');
     let latestVersion = 'dev';
     try {
-      const pkg = await services(c).subrequests.fetch(`https://raw.githubusercontent.com/${OFFICIAL_UPDATE_REPOSITORY}/${latestCommit}/worker/package.json`);
+      const pkg = await services(c).subrequests.fetch(`https://raw.githubusercontent.com/${sourceRepository}/${latestCommit}/worker/package.json`);
       if (pkg.ok) {
         const body = await pkg.json() as { version?: unknown };
         if (typeof body.version === 'string') latestVersion = body.version;
@@ -90,14 +102,13 @@ systemAdminRoutes.get('/update-check', async (c) => {
       latestVersion = 'dev';
     }
     const message = commit.commit?.message || '';
-    const deploymentUrl = repositoryUrlFromRepositoryUrl(repositoryUrl);
     const result: UpdateCheckResult = {
       current_version: formatAppVersion(APP_VERSION),
       latest_version: formatAppVersion(latestVersion),
       current_commit: shortGitSha(commitSha),
       latest_commit: shortGitSha(latestCommit),
       has_update: Boolean(latestCommit) && Boolean(commitSha) && commitSha !== latestCommit,
-      source_url: commit.html_url || `https://github.com/${OFFICIAL_UPDATE_REPOSITORY}/commits/${OFFICIAL_UPDATE_BRANCH}`,
+      source_url: commit.html_url || `https://github.com/${sourceRepository}/commits/${OFFICIAL_UPDATE_BRANCH}`,
       upgrade_url: deploymentUrl,
       repository_url: deploymentUrl,
       title: message.split('\n')[0] || latestCommit,
@@ -121,7 +132,7 @@ systemAdminRoutes.get('/health', async (c) => {
   try {
     await app.kv.get('core', { maxAgeMs: 0 });
     kvOk = true;
-    kvDetail = isEdgeKvAvailable() ? 'EdgeKV 可读' : '本地内存 KV';
+    kvDetail = isEdgeOneKvAvailable(c.env.MONITOR_KV) ? 'EdgeOne Pages KV 可读' : '本地内存 KV';
   } catch (error) {
     kvDetail = errorDetail(error);
   }
@@ -155,7 +166,7 @@ export function buildCapacity(core: CoreDoc) {
     retentionHours: Number(settings.record_preserve_time || 72),
   };
   return {
-    platform: 'esa',
+    platform: 'edgeone',
     clients: clientCount,
     gpu_clients: 0,
     ping_tasks: core.ping_tasks.map(task => ({ id: task.id, name: task.name, target_client_count: task.all_clients ? clientCount : task.clients.length })),
@@ -225,6 +236,18 @@ systemAdminRoutes.post('/download/backup', async (c) => {
   const password = typeof parsed.body.backup_password === 'string' ? parsed.body.backup_password : '';
   try {
     const backup = await buildBackupSnapshot(c);
+    if (isEdgeOne(c)) {
+      const plaintextBytes = new TextEncoder().encode(JSON.stringify(backup)).byteLength;
+      if (plaintextBytes > EDGEONE_MAX_CRYPTO_BYTES) {
+        return c.json({ error: '备份明文超过 EdgeOne 加密接口的 1 MiB 上限，请减少配置后重试' }, 413);
+      }
+      // AES-GCM adds a 16-byte tag; base64 expands it again. Reserve metadata space
+      // before encryption so every successful export fits the import file limit.
+      const estimatedFileBytes = Math.ceil((plaintextBytes + 16) / 3) * 4 + 2048;
+      if (estimatedFileBytes > EDGEONE_MAX_UPLOAD_FILE_BYTES) {
+        return c.json({ error: '加密备份预计超过 EdgeOne 的 800 KiB 导入文件上限，请减少配置后重试' }, 413);
+      }
+    }
     const encrypted = await encryptBackup(backup, password);
     if (!encrypted.ok) return c.json({ error: encrypted.error }, 400);
     audit(c, 'backup_download', `下载加密完整备份: ${JSON.stringify({ ...summarizeBackup(backup), encryption: BACKUP_ENCRYPTION_ALGORITHM })}`);
@@ -233,7 +256,7 @@ systemAdminRoutes.post('/download/backup', async (c) => {
       headers: {
         'Content-Type': 'application/json',
         'Cache-Control': 'no-store',
-        'Content-Disposition': `attachment; filename="esa-vps-monitor-encrypted-backup-${date}.json"`,
+        'Content-Disposition': `attachment; filename="eo-vps-monitor-encrypted-backup-${date}.json"`,
         'X-CF-VPS-Monitor-Backup-Schema': ENCRYPTED_BACKUP_SCHEMA_ID,
         'X-CF-VPS-Monitor-Backup-Scope': BACKUP_SCOPE,
         'X-CF-VPS-Monitor-Backup-Encrypted': 'true',
@@ -348,9 +371,12 @@ async function applyBackup(c: AppContext, backup: BackupData): Promise<void> {
 }
 
 systemAdminRoutes.post('/upload/backup', async (c) => {
+  const edgeOne = isEdgeOne(c);
+  const maxRequestBytes = edgeOne ? EDGEONE_MAX_UPLOAD_REQUEST_BYTES : MAX_BACKUP_BYTES + 64 * 1024;
   const contentLength = Number(c.req.header('Content-Length') || '0');
-  if (Number.isFinite(contentLength) && contentLength > MAX_BACKUP_BYTES) return c.json({ error: `备份文件不能超过 ${MAX_BACKUP_BYTES} 字节` }, 413);
-  const parsed = await readJsonObject(c, MAX_BACKUP_BYTES + 64 * 1024);
+  const declaredLimit = edgeOne ? maxRequestBytes : MAX_BACKUP_BYTES;
+  if (Number.isFinite(contentLength) && contentLength > declaredLimit) return c.json({ error: edgeOne ? 'EdgeOne 备份上传请求不能超过 900 KiB' : `备份文件不能超过 ${MAX_BACKUP_BYTES} 字节` }, 413);
+  const parsed = await readJsonObject(c, maxRequestBytes);
   if (!parsed.ok) return parsed.response;
   const body = parsed.body;
   const dryRun = c.req.query('dry_run') === '1' || c.req.query('dry_run') === 'true';
@@ -360,6 +386,9 @@ systemAdminRoutes.post('/upload/backup', async (c) => {
   }
   const envelope = isEncryptedEnvelope(body.backup) ? body.backup : body;
   if (!isEncryptedEnvelope(envelope)) return c.json({ error: '只支持导入加密完整备份，不支持明文备份文件' }, 400);
+  if (edgeOne && new TextEncoder().encode(JSON.stringify(envelope)).byteLength > EDGEONE_MAX_UPLOAD_FILE_BYTES) {
+    return c.json({ error: 'EdgeOne 加密备份文件不能超过 800 KiB' }, 413);
+  }
   const password = typeof body.backup_password === 'string' ? body.backup_password : c.req.header('X-Backup-Password') || '';
   const decrypted = await decryptBackup(envelope, password);
   if (!decrypted.ok) return c.json({ error: decrypted.error }, 400);
@@ -383,18 +412,18 @@ systemAdminRoutes.post('/test/sendMessage', async (c) => {
   const parsed = await readJsonObject(c);
   if (!parsed.ok) return parsed.response;
   const body = parsed.body;
-  const message = typeof body.message === 'string' && body.message.trim() ? body.message.trim() : 'ESA VPS Monitor 测试消息';
+  const message = typeof body.message === 'string' && body.message.trim() ? body.message.trim() : 'EO VPS Monitor 测试消息';
   const app = services(c);
   const core = await readCore(app, 0);
   const stored = Object.fromEntries(NOTIFICATION_DISPATCH_SETTING_KEYS.map(key => [key, core.settings[key]]).filter(([, value]) => value !== undefined));
   const settings = buildAdminSettings({ ...stored, ...pickNotificationSettingOverrides(body.settings) });
   const channel = typeof body.channel === 'string' && body.channel.trim() ? body.channel.trim() : settings.notification_method;
   if (!['telegram', 'email', 'webhook', 'none'].includes(channel)) return c.json({ error: '未知通知方式' }, 400);
-  if (channel === 'email') return c.json({ success: false, error: 'ESA 函数无法建立 SMTP 连接，请使用 Telegram 或 Webhook（可转发到邮件服务）' }, 400);
+  if (channel === 'email') return c.json({ success: false, error: '当前 EO 版本未启用 SMTP，请使用 Telegram 或 Webhook（可转发到邮件服务）' }, 400);
   const max = channel === 'webhook' ? WEBHOOK_MESSAGE_MAX_CHARS : TELEGRAM_MESSAGE_MAX_CHARS;
   if (channel !== 'none' && message.length > max) return c.json({ error: `测试消息不能超过 ${max} 个字符` }, 400);
   try {
-    const sent = await sendNotification(app, settings, { subject: 'ESA VPS Monitor 测试消息', body: message }, { channel, auditUser: c.get('username') });
+    const sent = await sendNotification(app, settings, { subject: 'EO VPS Monitor 测试消息', body: message }, { channel, auditUser: c.get('username') });
     if (!sent) {
       return c.json({ success: false, error: channel === 'none' ? '通知方式为 None，未发送测试消息' : '测试消息发送失败，请检查通知配置' }, channel === 'none' ? 400 : 502);
     }

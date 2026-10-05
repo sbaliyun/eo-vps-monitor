@@ -1,7 +1,7 @@
 /**
- * ESA 用量估算：函数请求数、EdgeKV 读写次数与存储量。
+ * EdgeOne Pages 工作负载估算：函数请求数、KV 读写次数与存储量。
  *
- * 只做数量级规划，实际计费以阿里云 ESA 控制台用量为准；此处不内置任何免费额度数字。
+ * 只做数量级规划，实际额度与计费以腾讯云控制台为准；此处不内置免费额度或平台请求预算。
  * 前端 SettingsGeneral 也直接调用本函数做即时预览，因此不能引入任何运行时依赖。
  */
 
@@ -84,11 +84,11 @@ export function buildResourceEstimates(input: CapacityResourceInput) {
     },
     {
       key: 'kv_reads', period: 'day', typical: typical.kvReads, peak: peak.kvReads, estimate: 'estimate',
-      notes: ['实例内有短时缓存，实际读次数与访问分布有关。'],
+      notes: ['实例内有短时缓存，实际读次数与访问分布有关；跨节点 KV 缓存同步可能延迟约 60 秒。'],
     },
     {
       key: 'kv_writes', period: 'day', typical: typical.kvWrites, peak: peak.kvWrites, estimate: 'estimate',
-      notes: ['每次上报写 1 次实时分片；到达记录间隔或带 Ping 结果时再写 1 次节点历史；维护任务约每分钟 1~2 次。'],
+      notes: ['按上报写入实时分片、历史记录写入与每分钟维护估算；维护由请求触发，无请求时须由外部定时服务触发。'],
     },
     {
       key: 'kv_storage_bytes', period: 'retained', typical: storage, peak: storage, estimate: 'estimate',

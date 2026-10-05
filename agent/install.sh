@@ -26,7 +26,7 @@ YES="0"
 KEEP_FILES="0"
 INSTALL_GHPROXY=""
 PROXY=""
-CF_MONITOR_REPOSITORY="sbaliyun/esa-vps-monitor"
+CF_MONITOR_REPOSITORY="sbaliyun/cf-vps-monitor"
 CF_MONITOR_BRANCH="main"
 CF_MONITOR_RELEASE_TAG=""
 CF_MONITOR_RELEASE_BASE="https://github.com/${CF_MONITOR_REPOSITORY}/releases/latest/download"
@@ -64,7 +64,7 @@ Options:
   --interval SECONDS        Report interval, default: 3.
   --ping-interval SECONDS   Ping task poll interval, default: 120.
   --traffic-reset-day DAY   Monthly traffic reset day, default: 1.
-  --mode MODE               websocket or http, default: websocket.
+  --mode MODE               websocket or http, default: http.
   --instance-id ID          Instance id used for default names and paths.
   --install-mode MODE       auto, system, or user. Default: auto.
   --install-dir DIR         Install directory. Default depends on mode.
@@ -76,7 +76,7 @@ Options:
   --binary-base-url URL     Base URL containing architecture-specific prebuilt binaries.
   --checksum-url URL        SHA256SUMS URL for --binary-url verification.
   --release-tag TAG         GitHub release tag used for default binary downloads.
-  --build-from-source       Build from GitHub source archive. Requires Go.
+  --build-from-source       Build from the panel's /agent/source.tar.gz. Requires Go.
   --source-url URL          Source archive used with --build-from-source.
   --proxy URL               Proxy used for binary downloads, for example http://127.0.0.1:10808.
   --mount-include LIST      Comma-separated mountpoint/device patterns included in disk totals.
@@ -989,12 +989,17 @@ ensure_agent_user() {
 }
 
 resolve_build_dir() {
-  source_archive="${SOURCE_ARCHIVE:-$(mktemp "${TMPDIR:-/tmp}/cf-vps-monitor-source.XXXXXX.tar.gz")}"
+  source_archive="${SOURCE_ARCHIVE:-$(mktemp "${TMPDIR:-/tmp}/cf-vps-monitor-source.XXXXXX")}"
   source_dir="${SOURCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/cf-vps-monitor-source.XXXXXX")}"
   SOURCE_ARCHIVE="$source_archive"
   SOURCE_DIR="$source_dir"
-  source_url="${SOURCE_URL:-https://github.com/${CF_MONITOR_REPOSITORY}/archive/refs/heads/${CF_MONITOR_BRANCH}.tar.gz}"
-  source_url="$(with_github_proxy "$source_url")"
+  if [ -n "$SOURCE_URL" ]; then
+    source_url="$(with_github_proxy "$SOURCE_URL")"
+  else
+    # The panel publishes its own Agent source so optional SSL capabilities are retained.
+    source_url="${SERVER%/}/agent/source.tar.gz"
+    require_https_url "panel source archive" "$source_url"
+  fi
   download_file "$source_url" "$source_archive" >&2
   if [ "$DRY_RUN" = "1" ]; then
     echo "[dry-run] tar -xzf ${source_archive} -C ${source_dir}" >&2
@@ -1143,7 +1148,7 @@ prepare_binary() {
   fi
 
   if [ -z "$WORK_BIN" ] && [ "$BUILD_FROM_SOURCE" = "1" ]; then
-    [ "$DRY_RUN" = "1" ] || has go || die "Go is required to build the agent from source. Install Go, publish release assets, or pass --binary-url."
+    [ "$DRY_RUN" = "1" ] || has go || die "No prebuilt Agent is available. Install Go (https://go.dev/dl/) to build the panel's source, configure AGENT_REPOSITORY to your public Release repository, or pass --binary-url with --checksum-url."
     if [ "$DRY_RUN" = "1" ]; then
       WORK_BIN="${TMPDIR:-/tmp}/cf-vps-monitor-agent.dry-run"
       BUILD_DIR="$(resolve_build_dir)"

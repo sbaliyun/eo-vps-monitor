@@ -49,4 +49,23 @@ assert.equal(
   `wget -qO- 'https://raw.githubusercontent.com/${CF_MONITOR_REPOSITORY}/refs/heads/main/agent/install.sh' | sh -s -- '--uninstall-all' '--yes'`,
 );
 
+// Panel-hosted scripts retain the EO Agent features and bypass a GitHub-only proxy.
+const panelOptions = { ...defaultAgentInstallOptions, ghproxy: 'https://github-proxy.example' };
+const panelInstall = buildAgentInstallCommand({ platform: 'unix', ...base, options: panelOptions, scriptBase: 'panel.example/agent///' });
+assert.ok(panelInstall.startsWith("wget -qO- 'https://panel.example/agent/install.sh' | sh"));
+assert.ok(panelInstall.includes("'--install-ghproxy' 'https://github-proxy.example'"));
+const panelUninstall = buildAgentUninstallAllCommand({ platform: 'unix', serverUrl: 'panel.example/path', ghproxy: panelOptions.ghproxy });
+assert.ok(panelUninstall.startsWith("wget -qO- 'https://panel.example/agent/install.sh' | sh"));
+assert.ok(panelUninstall.includes("'--uninstall-all' '--yes'"));
+const windowsCommand = buildAgentInstallCommand({ platform: 'windows', ...base, scriptBase: 'https://panel.example/agent/' });
+const windowsScript = Buffer.from(windowsCommand.split(' -EncodedCommand ')[1], 'base64').toString('utf16le');
+assert.ok(windowsScript.includes("iwr 'https://panel.example/agent/install-windows.ps1'"));
+assert.ok(windowsScript.includes("'-Mode' 'http'") || windowsScript.includes("-Mode 'http'"));
+const windowsUninstall = buildAgentUninstallAllCommand({ platform: 'windows', serverUrl: 'https://panel.example' });
+assert.ok(Buffer.from(windowsUninstall.split(' -EncodedCommand ')[1], 'base64').toString('utf16le')
+  .includes("iwr 'https://panel.example/agent/install-windows.ps1'"));
+const invalidBase = buildAgentInstallCommand({ platform: 'unix', ...base, scriptBase: 'https://user:password@bad.example/agent' });
+assert.ok(!invalidBase.includes('password'));
+assert.ok(invalidBase.includes('raw.githubusercontent.com'));
+
 await rm(tmp, { recursive: true, force: true });

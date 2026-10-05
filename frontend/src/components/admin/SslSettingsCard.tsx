@@ -11,7 +11,7 @@ interface ClientOption {
 }
 
 /**
- * HTTPS 证书到期检查设置。ESA 边缘函数读不到证书，证书由 Agent 检查：
+ * HTTPS 证书到期检查设置。本版本由支持 ssl_cert 的 Agent 检查证书：
  * 默认自动选排序最前、在线且版本支持的节点，也可以指定节点或关闭。
  */
 export default function SslSettingsCard({ clients }: { clients: ClientOption[] }) {

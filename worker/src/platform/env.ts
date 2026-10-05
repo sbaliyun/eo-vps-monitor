@@ -1,24 +1,25 @@
 /**
  * 运行时环境变量解析。
  *
- * 阿里云 ESA 函数的入口签名是 `fetch(request, context, env)`（env 在第三个参数），
- * 而 Hono / Cloudflare 风格是 `fetch(request, env, ctx)`。不同版本的运行时、本地
- * 开发服务器和测试夹具还可能把变量挂在 `globalThis.env` 或 `process.env` 上。
- * 这里把所有来源合并成一个普通对象，调用方只需读取 `AppEnv`。
+ * EdgeOne Pages 的入口接收 { request, env, context }，KV binding 则可能是
+ * 独立的全局变量。保留原 fetch(request, context, env) 的本地测试入口，
+ * 将配置对象与具体 binding 合并为每次请求独立的 AppEnv。
  */
+
+import { getGlobalEdgeOneKvBinding, type EdgeOneKvBinding } from './kv.ts';
 
 export interface AppEnv {
   /** 后台会话签名密钥，至少 32 字节。 */
   JWT_SECRET?: string;
-  /** ESA 边缘存储 KV 的命名空间名称。 */
-  KV_NAMESPACE?: string;
-  /** 忘记管理员账号密码时的重置密钥；未设置时使用 JWT_SECRET。 */
+  /** 在 EdgeOne Pages 项目中配置的具体 KV binding，不是命名空间字符串。 */
+  MONITOR_KV?: EdgeOneKvBinding;
+  /** EO 必须设置独立的管理员初始化/恢复密钥，至少 32 字节。 */
   ADMIN_RECOVERY_KEY?: string;
   /** 外部定时任务触发密钥；未设置时由 JWT_SECRET 派生。 */
   CRON_SECRET?: string;
-  /** 单次请求允许的 KV 操作数（ESA 默认约 8 次）。 */
+  /** 应用层单次请求 KV 操作预算。 */
   KV_OPS_PER_REQUEST?: string;
-  /** 单次请求允许的出站 fetch 子请求数（ESA 默认 4 次）。 */
+  /** 应用层单次请求出站 fetch 预算。 */
   SUBREQUESTS_PER_REQUEST?: string;
   /** 部署时注入的 Git 提交号，仅用于展示。 */
   CURRENT_GIT_COMMIT?: string;
@@ -39,18 +40,19 @@ function looksLikeExecutionContext(value: unknown): boolean {
 }
 
 /**
- * 本项目读取的变量名。ESA 的 env 可能是 Proxy 或不可枚举对象，Object.keys 拿不到键，
+ * 本项目读取的变量名。env 可能是 Proxy 或不可枚举对象，Object.keys 拿不到键，
  * 所以除了枚举外还要按名字逐个探测。
  */
 export const KNOWN_ENV_KEYS = [
   'JWT_SECRET',
-  'KV_NAMESPACE',
+  'MONITOR_KV',
   'ADMIN_RECOVERY_KEY',
   'CRON_SECRET',
   'KV_OPS_PER_REQUEST',
   'SUBREQUESTS_PER_REQUEST',
   'LIVE_SHARDS',
   'CURRENT_GIT_COMMIT',
+  'AGENT_REPOSITORY',
 ] as const;
 
 function copyStringEntries(target: Record<string, unknown>, source: unknown): void {
@@ -85,7 +87,7 @@ export function resolveInvocation(second: unknown, third: unknown): { env: AppEn
   for (const candidate of [third, second]) {
     if (looksLikeExecutionContext(candidate)) {
       ctx ||= candidate as ExecutionContextLike;
-      // ESA 的 context 上也可能挂 env。
+      // Local adapters may attach env to the execution context.
       envSources.push((candidate as Record<string, unknown>).env);
     } else {
       envSources.push(candidate);
@@ -98,12 +100,22 @@ export function resolveInvocation(second: unknown, third: unknown): { env: AppEn
 
   const env: Record<string, unknown> = {};
   for (const source of envSources) copyStringEntries(env, source);
+  env.MONITOR_KV ??= getGlobalEdgeOneKvBinding();
   return { env: env as AppEnv, ctx };
 }
 
 export function readEnvString(env: AppEnv, key: string): string {
   const value = env[key];
   return typeof value === 'string' ? value.trim() : '';
+}
+
+export function readAdminRecoveryKey(env: AppEnv): string {
+  const recovery = readEnvString(env, 'ADMIN_RECOVERY_KEY');
+  const jwt = readEnvString(env, 'JWT_SECRET');
+  if (env.EDGEONE === true || env.EDGEONE === 'true') {
+    return new TextEncoder().encode(recovery).byteLength >= 32 && recovery !== jwt ? recovery : '';
+  }
+  return recovery || jwt;
 }
 
 export function readEnvInt(env: AppEnv, key: string, fallback: number, min: number, max: number): number {

@@ -1,5 +1,5 @@
 {
-  "name": "esa-vps-monitor-frontend",
+  "name": "eo-vps-monitor-frontend",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -36,7 +36,9 @@
     "vite": "^8.0.16"
   },
   "optionalDependencies": {
+    "@rolldown/binding-darwin-arm64": "1.0.3",
     "@rolldown/binding-linux-x64-gnu": "1.0.3",
+    "lightningcss-darwin-arm64": "1.32.0",
     "lightningcss-linux-x64-gnu": "1.32.0"
   }
 }

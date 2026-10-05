@@ -34,7 +34,7 @@ export default function NotFound() {
         </Button>
       </Flex>
       <Text size="1" color="gray" mt="4">
-        ESA VPS Monitor {formatAppVersion()}
+        EO VPS Monitor {formatAppVersion()}
       </Text>
     </Flex>
   );

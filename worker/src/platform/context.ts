@@ -2,8 +2,8 @@
  * 单次请求的运行时服务：环境变量、KV 会话、出站子请求预算、后台任务。
  */
 
-import { readEnvInt, readEnvString, type AppEnv, type ExecutionContextLike } from './env.ts';
-import { EdgeKvDriver, KvSession, type KvDriver } from './kv.ts';
+import { readEnvInt, type AppEnv, type ExecutionContextLike } from './env.ts';
+import { EdgeOneKvDriver, KvSession, KvUnavailableError, isEdgeOneKvAvailable, type EdgeOneKvBinding, type KvDriver } from './kv.ts';
 
 export class SubrequestBudgetExceeded extends Error {
   constructor() {
@@ -13,8 +13,7 @@ export class SubrequestBudgetExceeded extends Error {
 }
 
 /**
- * ESA 函数默认每个请求最多 4 个 fetch 子请求（可在控制台申请提高）。
- * 通知、网站检测、更新检查都通过这里计数，超出时抛出 SubrequestBudgetExceeded。
+ * 通知、网站检测、更新检查共用请求预算，超出时抛出 SubrequestBudgetExceeded。
  */
 export class SubrequestBudget {
   private used = 0;
@@ -54,26 +53,26 @@ export interface AppServices {
 }
 
 let defaultDriverOverride: KvDriver | null = null;
-const edgeDrivers = new Map<string, EdgeKvDriver>();
+const edgeDrivers = new WeakMap<EdgeOneKvBinding, EdgeOneKvDriver>();
 
 /** 本地开发服务器与测试注入内存 KV。 */
 export function setDefaultKvDriver(driver: KvDriver | null): void {
   defaultDriverOverride = driver;
 }
 
-export function resolveKvNamespace(env: AppEnv): string {
-  return readEnvString(env, 'KV_NAMESPACE') || 'esa-vps-monitor';
-}
-
 function resolveDriver(env: AppEnv): KvDriver {
-  if (defaultDriverOverride) return defaultDriverOverride;
-  const namespace = resolveKvNamespace(env);
-  let driver = edgeDrivers.get(namespace);
-  if (!driver) {
-    driver = new EdgeKvDriver(namespace);
-    edgeDrivers.set(namespace, driver);
+  // A concrete invocation binding always wins over local/test injection. Never
+  // mutate the default override while serving a request in a shared isolate.
+  if (isEdgeOneKvAvailable(env.MONITOR_KV)) {
+    let driver = edgeDrivers.get(env.MONITOR_KV);
+    if (!driver) {
+      driver = new EdgeOneKvDriver(env.MONITOR_KV);
+      edgeDrivers.set(env.MONITOR_KV, driver);
+    }
+    return driver;
   }
-  return driver;
+  if (defaultDriverOverride) return defaultDriverOverride;
+  throw new KvUnavailableError('请在 EdgeOne Pages 项目中绑定 MONITOR_KV。');
 }
 
 export function createAppServices(env: AppEnv, ctx: ExecutionContextLike | undefined, options: { now?: () => number } = {}): AppServices {

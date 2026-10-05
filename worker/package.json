@@ -1,13 +1,13 @@
 {
-  "name": "esa-vps-monitor",
+  "name": "eo-vps-monitor",
   "version": "2.1.0",
-  "description": "VPS monitor on Alibaba Cloud ESA Functions & Pages with EdgeKV storage",
+  "description": "VPS monitor on Tencent EdgeOne Pages with native KV storage",
   "license": "MIT",
   "type": "module",
   "scripts": {
     "lint": "tsc --noEmit",
     "test": "node --test",
-    "build": "tsc --noEmit && node ../scripts/build-esa.mjs",
+    "build": "tsc --noEmit && node ../scripts/build-edgeone.mjs",
     "dev": "node ../scripts/dev-server.mjs"
   },
   "dependencies": {

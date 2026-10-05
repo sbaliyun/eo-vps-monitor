@@ -48,7 +48,7 @@ agentRoutes.get('/policy', async (c) => {
   if ('response' in result) return result.response;
   const app = services(c);
   const policy = await buildAgentPolicy(app, result.auth.core, result.auth.client);
-  // 顺带执行定时维护（ESA 没有 Cron）。
+  // Agent policy requests also advance request-triggered maintenance.
   if (app.kv.remaining() >= 4) app.waitUntil(maybeRunMaintenance(app, 'agent'));
   return c.json(policy);
 });
@@ -103,8 +103,8 @@ agentRoutes.post('/uploadBasicInfo', async (c) => {
 });
 agentRoutes.post('/ping/result', (c) => c.json({ error: '请升级 Agent：Ping 结果已随 /api/clients/report 上报' }, 410));
 
-// ESA 函数不支持 WebSocket 服务端：提示以 HTTP 模式运行 Agent。
+// This port accepts Agent reports over HTTP.
 agentRoutes.get('/report', (c) => c.json({
-  error: 'ESA 部署不支持 WebSocket 上报，请使用 --mode http（或设置 CF_MONITOR_MODE=http）重新安装 Agent',
+  error: '当前 EO 版本使用 HTTP 上报，请使用 --mode http（或设置 CF_MONITOR_MODE=http）重新安装 Agent',
   mode: 'http',
 }, 426));

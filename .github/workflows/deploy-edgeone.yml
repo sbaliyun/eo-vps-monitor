@@ -1,0 +1,43 @@
+name: Deploy to EdgeOne Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: EdgeOne deployment environment
+        required: true
+        default: production
+        type: choice
+        options: [production, preview]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-edgeone-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      EDGEONE_API_TOKEN: ${{ secrets.EDGEONE_API_TOKEN }}
+      EDGEONE_PROJECT_NAME: ${{ vars.EDGEONE_PROJECT_NAME }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Check deployment configuration
+        run: |
+          test -n "$EDGEONE_API_TOKEN" || { echo '::error::Configure EDGEONE_API_TOKEN'; exit 1; }
+          test -n "$EDGEONE_PROJECT_NAME" || { echo '::error::Configure EDGEONE_PROJECT_NAME'; exit 1; }
+      - run: npm ci
+      - run: npm run build
+      - name: Deploy verified output
+        run: npx --yes edgeone pages deploy ./edgeone-dist -n "$EDGEONE_PROJECT_NAME" -t "$EDGEONE_API_TOKEN" -e "${{ inputs.environment }}"

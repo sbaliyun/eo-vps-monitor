@@ -17,13 +17,13 @@ type SetupStatus = {
 
 const CHECK_LABELS: Record<string, string> = {
   jwt_secret: '会话密钥 JWT_SECRET',
-  edge_kv: 'ESA 边缘存储（EdgeKV）',
+  admin_recovery_key: '管理员恢复密钥 ADMIN_RECOVERY_KEY',
+  edge_kv: 'EdgeOne KV 存储',
   admin: '管理员账号',
 };
 
 /**
- * 部署自检页（ESA 版本不需要初始化数据库）：
- * 检查 JWT_SECRET 与 EdgeKV 命名空间是否可用，并提示首次创建管理员。
+ * 部署自检页：检查 EdgeOne KV 绑定与认证密钥，并提示首次创建管理员。
  */
 export default function DbInit() {
   const [status, setStatus] = React.useState<SetupStatus | null>(null);
@@ -34,7 +34,7 @@ export default function DbInit() {
     fetch('/api/setup/status', { cache: 'no-store' })
       .then((response) => response.json())
       .then((body: SetupStatus) => setStatus(body))
-      .catch(() => setStatus({ ok: false, checks: [{ key: 'edge_kv', status: 'error', detail: '无法访问函数接口，请确认 ESA 函数已部署且路由正确' }] }))
+      .catch(() => setStatus({ ok: false, checks: [{ key: 'edge_kv', status: 'error', detail: '无法访问函数接口，请确认 EdgeOne Pages 项目已部署且 /api 路由正确' }] }))
       .finally(() => setLoading(false));
   }, []);
 
@@ -49,7 +49,7 @@ export default function DbInit() {
           </Box>
           <Heading size="6">部署自检</Heading>
           <Text size="2" color="gray" align="center">
-            ESA 版本使用边缘存储 KV，无需初始化数据库。以下检查通过后即可登录后台。
+            EdgeOne 版本使用 KV 存储，无需初始化数据库。检查通过后，在登录页使用恢复密钥创建管理员。
           </Text>
         </Flex>
 
@@ -75,8 +75,8 @@ export default function DbInit() {
             ))}
             {!status.ok && (
               <Text size="1" color="gray">
-                在 ESA 控制台「函数和 Pages → 项目 → 设置 → 环境变量」中配置 JWT_SECRET（至少 32 个字符）与 KV_NAMESPACE，
-                并确认已在「边缘存储」中创建同名命名空间，保存后重新部署。
+                在 EdgeOne Pages 项目中配置 JWT_SECRET（至少 32 字节）和独立的 ADMIN_RECOVERY_KEY，
+                创建 KV 命名空间并以 MONITOR_KV 名称绑定到项目，保存后重新部署。
               </Text>
             )}
           </Flex>

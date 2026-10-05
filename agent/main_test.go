@@ -1246,6 +1246,16 @@ func TestExecuteICMPPingUsesResolvedPublicIP(t *testing.T) {
 		if err := os.Chmod(script, 0o755); err != nil {
 			t.Fatalf("chmod fake ping: %v", err)
 		}
+		// BSD IPv6 uses ping6; keep this fixture away from the real network too.
+		if runtime.GOOS == "darwin" || runtime.GOOS == "freebsd" {
+			contents, err := os.ReadFile(script)
+			if err != nil {
+				t.Fatalf("read fake ping: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "ping6"), contents, 0o755); err != nil {
+				t.Fatalf("write fake ping6: %v", err)
+			}
+		}
 	}
 	t.Setenv("PING_ARGS_FILE", argsFile)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))

@@ -120,7 +120,7 @@ type DispatchOptions = {
   channel?: string;
   auditUser?: string;
   deps?: DispatchDependencies;
-  /** 受 ESA 子请求预算约束的 fetch。 */
+  /** 受应用请求预算约束的 fetch。 */
   fetcher?: typeof fetch;
 };
 
@@ -199,7 +199,7 @@ async function dispatchEmail(
   deps: DispatchDependencies,
   auditUser?: string,
 ): Promise<boolean> {
-  await record(deps, database, 'email', 'error', 'ESA 函数不能建立 SMTP 连接，请改用 Telegram 或 Webhook（可转发到邮件服务）', {
+  await record(deps, database, 'email', 'error', '当前 EO 版本未启用 SMTP，请改用 Telegram 或 Webhook（可转发到邮件服务）', {
     auditAction: 'email_error',
     auditUser,
   });

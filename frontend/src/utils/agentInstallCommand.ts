@@ -78,6 +78,19 @@ function httpsDownloadUrl(value?: string | null) {
   return '';
 }
 
+function normalizedAgentScriptBase(value?: string) {
+  const raw = value?.trim() || '';
+  if (!raw) return '';
+  try {
+    const url = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    if ((url.protocol === 'https:' || (url.protocol === 'http:' && isLocalHttpHost(url.hostname)))
+      && url.hostname && !url.username && !url.password && !url.search && !url.hash) {
+      return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+    }
+  } catch {}
+  return '';
+}
+
 function customAgentDownloadUrls(binaryValue?: string | null, checksumValue?: string | null) {
   const binaryUrl = httpsDownloadUrl(binaryValue);
   const checksumUrl = binaryUrl ? httpsDownloadUrl(checksumValue) : '';
@@ -185,6 +198,7 @@ export function buildAgentInstallCommand({
   options,
   instanceId,
   nodeName,
+  scriptBase,
 }: {
   platform: AgentInstallPlatform;
   serverUrl: string;
@@ -192,12 +206,17 @@ export function buildAgentInstallCommand({
   options: AgentInstallOptions;
   instanceId?: string;
   nodeName?: string;
+  scriptBase?: string;
 }) {
   const ghproxy = normalizeProxyUrl(options.ghproxy);
   const downloadProxy = normalizeProxyUrl(options.downloadProxy, false);
   const { binaryUrl, checksumUrl } = customAgentDownloadUrls(options.binaryUrl, options.checksumUrl);
   const releaseTag = normalizeReleaseTag(options.releaseTag);
   const scriptRef = options.scriptRef?.trim();
+  const localScriptBase = normalizedAgentScriptBase(scriptBase);
+  const scriptUrl = (file: 'install.sh' | 'install-windows.ps1') => localScriptBase
+    ? `${localScriptBase}/${file}`
+    : cfMonitorAgentScriptUrl(file, ghproxy, releaseTag, scriptRef);
   const installMode = ['system', 'user'].includes(options.installMode) ? options.installMode : '';
   const dir = options.dir.trim();
   const serviceName = options.serviceName.trim();
@@ -215,7 +234,7 @@ export function buildAgentInstallCommand({
       if (trafficResetDay !== '1') args.push('-r', trafficResetDay);
       if (effectiveNodeName) args.push('-n', effectiveNodeName);
       args.push('-i', effectiveInstanceId);
-      // ESA 函数不支持 WebSocket 服务端：Agent 固定使用 HTTP 上报。
+      // EO 版本的 Agent 固定使用 HTTP 上报。
       args.push('--mode', 'http');
       if (installMode) args.push('--install-mode', installMode);
       if (binaryUrl) args.push('--binary-url', binaryUrl);
@@ -230,7 +249,7 @@ export function buildAgentInstallCommand({
       if (nicInclude) args.push('--nic-include', nicInclude);
       if (nicExclude) args.push('--nic-exclude', nicExclude);
       return shPipe(
-        `wget -qO- ${shellQuote(cfMonitorAgentScriptUrl('install.sh', ghproxy, releaseTag, scriptRef))}`,
+        `wget -qO- ${shellQuote(scriptUrl('install.sh'))}`,
         args,
       );
     }
@@ -252,7 +271,7 @@ export function buildAgentInstallCommand({
       if (nicInclude) args.push('-NicInclude', nicInclude);
       if (nicExclude) args.push('-NicExclude', nicExclude);
       return powershellCommand(
-        `iwr ${psQuote(cfMonitorAgentScriptUrl('install-windows.ps1', ghproxy, releaseTag, scriptRef))} -UseBasicParsing -OutFile 'install-windows.ps1'; & '.\\install-windows.ps1' ${args.map((arg, index) => index % 2 === 0 ? arg : psQuote(arg)).join(' ')}`,
+        `iwr ${psQuote(scriptUrl('install-windows.ps1'))} -UseBasicParsing -OutFile 'install-windows.ps1'; & '.\\install-windows.ps1' ${args.map((arg, index) => index % 2 === 0 ? arg : psQuote(arg)).join(' ')}`,
       );
     }
     default:
@@ -263,15 +282,19 @@ export function buildAgentUninstallAllCommand({
   platform,
   ghproxy = '',
   scriptRef = '',
+  serverUrl,
+  scriptBase,
 }: {
   platform: AgentInstallPlatform;
   serverUrl?: string;
   ghproxy?: string;
   scriptRef?: string;
+  scriptBase?: string;
 }) {
   const proxy = normalizeProxyUrl(ghproxy);
+  const localScriptBase = normalizedAgentScriptBase(scriptBase || (serverUrl ? `${normalizeServerUrl(serverUrl, '')}/agent` : ''));
   const scriptUrl = (file: 'install.sh' | 'install-windows.ps1') =>
-    cfMonitorAgentScriptUrl(file, proxy, '', scriptRef);
+    localScriptBase ? `${localScriptBase}/${file}` : cfMonitorAgentScriptUrl(file, proxy, '', scriptRef);
   switch (platform) {
     case 'windows':
       return powershellCommand(

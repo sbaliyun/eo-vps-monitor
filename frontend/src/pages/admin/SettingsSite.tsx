@@ -11,6 +11,7 @@ import { requestPassword } from '../../utils/reauth';
 import { notifyPublicDataUpdated } from '../../utils/publicDataEvents';
 import { clearCachedPublicSettings } from '../../utils/publicSettings';
 import type { SettingsLayoutOutletContext } from './SettingsLayout';
+import { EDGEONE_MAX_SITE_LOGO_BYTES, EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES } from '../../../../worker/src/utils/edgeone-limits';
 
 const MIN_BACKUP_PASSWORD_LENGTH = 6;
 const MAX_LOGO_BYTES = 1024 * 1024;
@@ -32,7 +33,16 @@ export default function SettingsSite() {
   const [reloadKey, setReloadKey] = useState(0);
   const [saving, setSaving] = useState(false);
   const [logoSaving, setLogoSaving] = useState(false);
+  const [edgeOne, setEdgeOne] = useState(false);
   const logoInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/version').then((version) => {
+      if (!cancelled) setEdgeOne(version.platform === 'tencent-edgeone');
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [apiFetch]);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +131,7 @@ export default function SettingsSite() {
     if (!password) return;
 
     try {
-      await downloadBackupFile(`esa-vps-monitor-encrypted-backup-${new Date().toISOString().slice(0, 10)}.json`, password);
+      await downloadBackupFile(`eo-vps-monitor-encrypted-backup-${new Date().toISOString().slice(0, 10)}.json`, password);
       toast.success('加密完整备份已下载，请保存好备份密码');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '备份下载失败');
@@ -133,11 +143,25 @@ export default function SettingsSite() {
     if (!file) return;
 
     try {
+      if (edgeOne && file.size > EDGEONE_MAX_UPLOAD_FILE_BYTES) {
+        toast.error('EdgeOne 加密备份文件不能超过 800 KiB');
+        return;
+      }
       const data = JSON.parse(await file.text());
       const password = await requestPassword('请输入该备份文件的加密密码', {
         autocomplete: 'off',
       });
       if (!password) return;
+      const restoreBody = JSON.stringify({
+        backup: data,
+        backup_password: password,
+        confirm_restore: true,
+        acknowledge_overwrite: true,
+      });
+      if (edgeOne && new TextEncoder().encode(restoreBody).byteLength > EDGEONE_MAX_UPLOAD_REQUEST_BYTES) {
+        toast.error('EdgeOne 备份上传请求不能超过 900 KiB，请使用更小的备份文件');
+        return;
+      }
       const beforeRestorePassword = await requestPassword(
         '恢复前会自动下载当前配置的加密备份。请设置临时备份文件密码，至少 6 位。',
         {
@@ -147,19 +171,14 @@ export default function SettingsSite() {
       );
       if (!beforeRestorePassword) return;
       try {
-        await downloadBackupFile(`esa-vps-monitor-before-restore-${new Date().toISOString().slice(0, 10)}.json`, beforeRestorePassword);
+        await downloadBackupFile(`eo-vps-monitor-before-restore-${new Date().toISOString().slice(0, 10)}.json`, beforeRestorePassword);
       } catch (error) {
         const message = error instanceof Error ? error.message : '无法下载当前配置';
         if (!window.confirm(`恢复前自动备份失败：${message}\n\n继续恢复会覆盖当前配置，且无法用本次自动备份撤回。是否继续恢复？`)) return;
       }
       const result = await apiFetch('/admin/upload/backup?confirm_restore=true&acknowledge_overwrite=true', {
         method: 'POST',
-        body: JSON.stringify({
-          backup: data,
-          backup_password: password,
-          confirm_restore: true,
-          acknowledge_overwrite: true,
-        }),
+        body: restoreBody,
       });
 
       if (!result.success) {
@@ -192,8 +211,8 @@ export default function SettingsSite() {
       event.target.value = '';
       return;
     }
-    if (file.size > MAX_LOGO_BYTES) {
-      toast.error('Logo 不能超过 1MB');
+    if (file.size > (edgeOne ? EDGEONE_MAX_SITE_LOGO_BYTES : MAX_LOGO_BYTES)) {
+      toast.error(edgeOne ? 'EdgeOne Logo 不能超过 600 KiB，请压缩后上传' : 'Logo 不能超过 1MB');
       event.target.value = '';
       return;
     }
@@ -248,7 +267,7 @@ export default function SettingsSite() {
         <Box style={{ marginBottom: 16 }}>
           <Text size="2" weight="medium" style={{ display: 'block', marginBottom: 4 }}>站点 Logo</Text>
           <Text size="1" color="gray" style={{ display: 'block', marginBottom: 8 }}>
-            显示在前台导航栏和后台登录页，支持 PNG、JPG、WebP，最大 1MB。
+            显示在前台导航栏和后台登录页，支持 PNG、JPG、WebP，{edgeOne ? 'EdgeOne 最大 600 KiB。' : '最大 1MB。'}
           </Text>
           <Flex align="center" gap="3" wrap="wrap">
             <Box className="site-logo-preview">
@@ -276,14 +295,14 @@ export default function SettingsSite() {
           description="显示在导航栏和浏览器标签页"
           value={settings.site_title || ''}
           onChange={(value) => updateSetting('site_title', value)}
-          placeholder="ESA VPS Monitor"
+          placeholder="EO VPS Monitor"
         />
         <SettingInput
           label="站点副标题"
           description="显示在首页标题区"
           value={settings.site_subtitle || ''}
           onChange={(value) => updateSetting('site_subtitle', value)}
-          placeholder="ESA server monitor"
+          placeholder="EO server monitor"
         />
         <SettingInput
           label="站点描述"
@@ -319,6 +338,9 @@ export default function SettingsSite() {
           <Text size="1" color="gray">
             导出内容包含服务器列表、系统设置、Ping 任务、离线通知和负载通知；不包含管理员账户、审计日志和历史监控数据。恢复会覆盖对应配置，并清理不存在服务器的历史记录。
           </Text>
+          {edgeOne && <Text size="1" color="gray">
+            EdgeOne 加密备份文件最大 800 KiB，上传请求最大 900 KiB。配置过大时会停止导出并提示缩减配置。
+          </Text>}
           <Flex gap="3" wrap="wrap" mt="2">
             <Button variant="soft" onClick={handleDownloadBackup}>
               <Download size={16} /> 导出加密完整备份

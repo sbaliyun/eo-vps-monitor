@@ -2,10 +2,10 @@ import { Badge, Text } from '@radix-ui/themes';
 import type { ResourceEstimate } from '../../../../worker/src/utils/capacity-estimate';
 
 const labels: Record<ResourceEstimate['key'], string> = {
-  function_requests: 'ESA 函数请求',
-  kv_reads: 'EdgeKV 读取',
-  kv_writes: 'EdgeKV 写入',
-  kv_storage_bytes: 'EdgeKV 存储',
+  function_requests: 'EdgeOne 函数请求',
+  kv_reads: 'Pages KV 读取',
+  kv_writes: 'Pages KV 写入',
+  kv_storage_bytes: 'Pages KV 存储',
 };
 
 function amount(row: ResourceEstimate, value: number | null | undefined): string {
@@ -36,7 +36,7 @@ export default function CapacityResources({ resources, dailyViewMinutes }: { res
   return <section className="capacity-resources" aria-label="分项资源用量估算">
     <Text as="p" size="2" weight="bold">分项资源用量</Text>
     <Text as="p" size="1" color="gray">
-      ESA 按函数请求数、KV 读写次数与存储量计费，具体免费额度与单价以阿里云控制台为准。≥ 表示下限。
+      以下为应用工作负载估算，实际免费额度、计费项目与单价以腾讯云控制台为准。≥ 表示下限。
     </Text>
     <div style={{ overflowX: 'auto', maxWidth: '100%' }}>
       <table className="capacity-resource-table" aria-label="分项资源用量估算">

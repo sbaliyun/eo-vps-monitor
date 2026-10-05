@@ -1,0 +1,13 @@
+{
+  "installCommand": "npm ci",
+  "buildCommand": "npm run build",
+  "outputDirectory": "edgeone-dist",
+  "nodeVersion": "24.5.0",
+  "rewrites": [{ "source": "/*", "destination": "/index.html" }],
+  "headers": [
+    {
+      "source": "/api/*",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}

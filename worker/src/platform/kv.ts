@@ -1,11 +1,10 @@
 /**
- * ESA 边缘存储（EdgeKV）访问层。
+ * EdgeOne Pages KV 访问层。
  *
- * ESA 函数内的 EdgeKV 只有 get / put / delete，没有 list、没有事务；写入先落中心，
- * 再在数秒内失效各边缘节点的旧值（最终一致）。单次请求可发起的 KV 操作次数也有限
- * （实测约 8 次），因此：
+ * KV binding 由 Pages 项目配置提供。不同边缘节点的缓存通常约 60 秒同步，
+ * 没有事务或 compare-and-swap；本层保留请求操作预算与以下缓存策略：
  *  - 每个请求一个 KvSession：请求内同 key 只读一次，并统计操作数；
- *  - 模块级（isolate 内跨请求）缓存：写入后立即更新，解决「保存后刷新又变回旧值」；
+ *  - 模块级（isolate 内跨请求）缓存：写入后更新，减轻同一 isolate 读到旧值；
  *  - 文档带 `_rev`，读-改-写路径在模块缓存与 KV 返回值之间取较新的一份。
  */
 
@@ -15,13 +14,17 @@ export interface KvDriver {
   delete(key: string): Promise<void>;
 }
 
-type EdgeKvInstance = {
+export interface EdgeOneKvBinding {
   get(key: string, options?: { type?: 'text' | 'json' | 'arrayBuffer' | 'stream' }): Promise<unknown>;
   put(key: string, value: string): Promise<unknown>;
   delete(key: string): Promise<unknown>;
-};
+}
 
-type EdgeKvConstructor = new (options: { namespace: string }) => EdgeKvInstance;
+declare const MONITOR_KV: EdgeOneKvBinding | undefined;
+
+const encoder = new TextEncoder();
+const MAX_KEY_BYTES = 512;
+const MAX_VALUE_BYTES = 900 * 1024;
 
 export class KvUnavailableError extends Error {
   constructor(message: string) {
@@ -30,14 +33,31 @@ export class KvUnavailableError extends Error {
   }
 }
 
-function findEdgeKvConstructor(): EdgeKvConstructor | null {
-  const globalObject = globalThis as Record<string, unknown>;
-  const candidate = globalObject.EdgeKV ?? globalObject.edgeKV;
-  return typeof candidate === 'function' ? candidate as EdgeKvConstructor : null;
+export function getGlobalEdgeOneKvBinding(): EdgeOneKvBinding | undefined {
+  const candidate = typeof MONITOR_KV !== 'undefined'
+    ? MONITOR_KV : (globalThis as Record<string, unknown>).MONITOR_KV;
+  return isKvBinding(candidate) ? candidate : undefined;
 }
 
+export function isEdgeOneKvAvailable(binding: unknown): binding is EdgeOneKvBinding {
+  return isKvBinding(binding);
+}
+
+function isKvBinding(binding: unknown): binding is EdgeOneKvBinding {
+  if (!binding || typeof binding !== 'object') return false;
+  const candidate = binding as Partial<EdgeOneKvBinding>;
+  return typeof candidate.get === 'function' && typeof candidate.put === 'function' && typeof candidate.delete === 'function';
+}
+
+/** Retained for callers transitioning their diagnostic labels to EdgeOne. */
 export function isEdgeKvAvailable(): boolean {
-  return findEdgeKvConstructor() !== null;
+  return getGlobalEdgeOneKvBinding() !== undefined;
+}
+
+export function edgeOneKvKey(key: string): string {
+  const encoded = `eo_${Array.from(encoder.encode(key), byte => byte.toString(16).padStart(2, '0')).join('')}`;
+  if (encoded.length > MAX_KEY_BYTES) throw Object.assign(new Error('KV key exceeds the 512-byte EdgeOne limit'), { status: 413 });
+  return encoded;
 }
 
 async function readEdgeValue(value: unknown): Promise<string | null> {
@@ -50,34 +70,30 @@ async function readEdgeValue(value: unknown): Promise<string | null> {
   return String(value);
 }
 
-export class EdgeKvDriver implements KvDriver {
-  private instance: EdgeKvInstance | null = null;
-  private readonly namespace: string;
+export class EdgeOneKvDriver implements KvDriver {
+  private readonly binding: EdgeOneKvBinding;
 
-  constructor(namespace: string) {
-    this.namespace = namespace;
-  }
-
-  private kv(): EdgeKvInstance {
-    if (this.instance) return this.instance;
-    const EdgeKV = findEdgeKvConstructor();
-    if (!EdgeKV) {
-      throw new KvUnavailableError('当前运行时没有 EdgeKV，请在 ESA 函数和 Pages 中部署，或在本地使用内存 KV。');
+  constructor(binding: EdgeOneKvBinding) {
+    if (!isEdgeOneKvAvailable(binding)) {
+      throw new KvUnavailableError('请在 EdgeOne Pages 项目中绑定 MONITOR_KV，或在本地使用内存 KV。');
     }
-    this.instance = new EdgeKV({ namespace: this.namespace });
-    return this.instance;
+    this.binding = binding;
   }
 
   async get(key: string): Promise<string | null> {
-    return readEdgeValue(await this.kv().get(key, { type: 'text' }));
+    return readEdgeValue(await this.binding.get(edgeOneKvKey(key), { type: 'text' }));
   }
 
   async put(key: string, value: string): Promise<void> {
-    await this.kv().put(key, value);
+    if (typeof value !== 'string') throw new TypeError('KV value must be a string');
+    if (encoder.encode(value).byteLength > MAX_VALUE_BYTES) {
+      throw Object.assign(new Error('KV value exceeds the 900 KiB application limit'), { status: 413 });
+    }
+    await this.binding.put(edgeOneKvKey(key), value);
   }
 
   async delete(key: string): Promise<void> {
-    await this.kv().delete(key);
+    await this.binding.delete(edgeOneKvKey(key));
   }
 }
 
@@ -116,16 +132,25 @@ export class MemoryKvDriver implements KvDriver {
 type ModuleCacheEntry = { value: string | null; at: number };
 
 const MODULE_CACHE_MAX_ENTRIES = 1024;
-const moduleCache = new Map<string, ModuleCacheEntry>();
+let moduleCaches = new WeakMap<KvDriver, Map<string, ModuleCacheEntry>>();
 
-function moduleCacheGet(key: string, maxAgeMs: number, now: number): ModuleCacheEntry | undefined {
+function driverCache(driver: KvDriver): Map<string, ModuleCacheEntry> {
+  let cache = moduleCaches.get(driver);
+  if (!cache) {
+    cache = new Map();
+    moduleCaches.set(driver, cache);
+  }
+  return cache;
+}
+
+function moduleCacheGet(moduleCache: Map<string, ModuleCacheEntry>, key: string, maxAgeMs: number, now: number): ModuleCacheEntry | undefined {
   const entry = moduleCache.get(key);
   if (!entry) return undefined;
   if (now - entry.at > maxAgeMs) return undefined;
   return entry;
 }
 
-function moduleCacheSet(key: string, value: string | null, now: number): void {
+function moduleCacheSet(moduleCache: Map<string, ModuleCacheEntry>, key: string, value: string | null, now: number): void {
   if (moduleCache.size >= MODULE_CACHE_MAX_ENTRIES && !moduleCache.has(key)) {
     const oldest = moduleCache.keys().next().value;
     if (typeof oldest === 'string') moduleCache.delete(oldest);
@@ -135,7 +160,7 @@ function moduleCacheSet(key: string, value: string | null, now: number): void {
 }
 
 export function resetKvModuleCacheForTests(): void {
-  moduleCache.clear();
+  moduleCaches = new WeakMap();
 }
 
 export interface KvReadOptions {
@@ -194,7 +219,7 @@ export class KvSession {
    */
   cached(key: string): { value: string | null; at: number } | undefined {
     if (this.requestCache.has(key)) return { value: this.requestCache.get(key)!, at: this.now() };
-    const entry = moduleCache.get(key);
+    const entry = driverCache(this.driver).get(key);
     return entry ? { value: entry.value, at: entry.at } : undefined;
   }
 
@@ -208,7 +233,7 @@ export class KvSession {
     const now = this.now();
     const maxAgeMs = options.maxAgeMs ?? 0;
     if (maxAgeMs > 0) {
-      const cached = moduleCacheGet(key, maxAgeMs, now);
+      const cached = moduleCacheGet(driverCache(this.driver), key, maxAgeMs, now);
       if (cached) {
         this.requestCache.set(key, cached.value);
         return cached.value;
@@ -217,7 +242,7 @@ export class KvSession {
     this.spend('get', key);
     const value = await this.driver.get(key);
     this.requestCache.set(key, value);
-    moduleCacheSet(key, value, now);
+    moduleCacheSet(driverCache(this.driver), key, value, now);
     return value;
   }
 
@@ -241,7 +266,7 @@ export class KvSession {
       const raw = this.requestCache.get(key)!;
       return raw ? safeParse<T>(raw) : null;
     }
-    const localEntry = moduleCache.get(key);
+    const localEntry = driverCache(this.driver).get(key);
     const local = localEntry?.value ? safeParse<T>(localEntry.value) : null;
     this.spend('get', key);
     const raw = await this.driver.get(key);
@@ -249,7 +274,7 @@ export class KvSession {
     const pick = (local && (!remote || Number(local._rev || 0) > Number(remote._rev || 0))) ? local : remote;
     const pickedRaw = pick === local && localEntry ? localEntry.value : raw;
     this.requestCache.set(key, pickedRaw);
-    moduleCacheSet(key, pickedRaw, this.now());
+    moduleCacheSet(driverCache(this.driver), key, pickedRaw, this.now());
     return pick;
   }
 
@@ -260,7 +285,7 @@ export class KvSession {
     this.spend('put', key);
     await this.driver.put(key, value);
     this.requestCache.set(key, value);
-    moduleCacheSet(key, value, this.now());
+    moduleCacheSet(driverCache(this.driver), key, value, this.now());
   }
 
   async putJson<T extends object>(key: string, value: T): Promise<T> {
@@ -273,13 +298,13 @@ export class KvSession {
     this.spend('delete', key);
     await this.driver.delete(key);
     this.requestCache.set(key, null);
-    moduleCacheSet(key, null, this.now());
+    moduleCacheSet(driverCache(this.driver), key, null, this.now());
   }
 
   /** 丢弃本请求与模块级缓存中的某个 key（例如确认远端已被其他实例更新）。 */
   forget(key: string): void {
     this.requestCache.delete(key);
-    moduleCache.delete(key);
+    driverCache(this.driver).delete(key);
   }
 }
 

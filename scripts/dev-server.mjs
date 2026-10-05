@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 本地模拟 ESA 函数和 Pages：
- *  - 静态资源来自 frontend/dist，页面导航请求走 SPA 回退（与 esa.jsonc 的 notFoundStrategy 一致）；
+ * 本地模拟 EdgeOne Pages：
+ *  - 静态资源来自 edgeone-dist，页面导航请求走 SPA 回退；
  *  - 其余请求交给函数入口；
- *  - EdgeKV 用内存实现，并持久化到 .dev/kv.json。
+ *  - MONITOR_KV 用原始 binding 实现，并持久化到 .dev/eo-kv.json。
  *
  * 用法：JWT_SECRET=至少32字节 node scripts/dev-server.mjs [--port 8787]
  */
@@ -11,31 +11,42 @@ import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { buildEsa } from './build-esa.mjs';
+import { buildEdgeOne } from './build-edgeone.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf('--port') + 1] || process.env.PORT || 8787);
-const staticDir = join(root, 'frontend', 'dist');
-const kvFile = join(root, '.dev', 'kv.json');
+const staticDir = existsSync(join(root, 'edgeone-dist', 'index.html'))
+  ? join(root, 'edgeone-dist') : join(root, 'frontend', 'dist');
+const kvFile = join(root, '.dev', 'eo-kv.json');
 
 const outfile = join(root, 'worker', '.tmp', 'dev-entry.mjs');
-await buildEsa({ entry: join(root, 'worker', 'src', 'dev-entry.ts'), outfile, minify: false });
+await buildEdgeOne({ entry: join(root, 'worker', 'src', 'dev-entry.ts'), outfile, minify: false });
 const worker = await import(`${pathToFileURL(outfile).href}?t=${Date.now()}`);
 
 mkdirSync(dirname(kvFile), { recursive: true });
 const initial = existsSync(kvFile) ? JSON.parse(readFileSync(kvFile, 'utf8')) : {};
+const data = new Map(Object.entries(initial));
 let saveTimer = null;
-const driver = new worker.MemoryKvDriver(initial, (data) => {
+function persistKv() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => writeFileSync(kvFile, JSON.stringify(Object.fromEntries(data))), 200);
-});
-worker.setDefaultKvDriver(driver);
+  saveTimer = null;
+  writeFileSync(kvFile, JSON.stringify(Object.fromEntries(data)));
+}
+function scheduleKvSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(persistKv, 200);
+}
+const binding = {
+  async get(key) { return data.get(key) ?? null; },
+  async put(key, value) { data.set(key, value); scheduleKvSave(); },
+  async delete(key) { data.delete(key); scheduleKvSave(); },
+};
 
 const env = {
   JWT_SECRET: process.env.JWT_SECRET || 'local-dev-secret-please-change-0123456789abcdef',
-  KV_NAMESPACE: process.env.KV_NAMESPACE || 'esa-vps-monitor-dev',
-  ADMIN_RECOVERY_KEY: process.env.ADMIN_RECOVERY_KEY || '',
+  MONITOR_KV: binding,
+  ADMIN_RECOVERY_KEY: process.env.ADMIN_RECOVERY_KEY || 'local-dev-admin-recovery-key-0123456789abcdef',
   CRON_SECRET: process.env.CRON_SECRET || '',
 };
 
@@ -89,14 +100,15 @@ const server = createServer(async (req, res) => {
       if (Array.isArray(value)) value.forEach(item => headers.append(key, item));
       else if (value !== undefined) headers.set(key, value);
     }
-    if (!headers.has('x-forwarded-for')) headers.set('x-forwarded-for', req.socket.remoteAddress || '127.0.0.1');
     const request = new Request(url, {
       method: req.method,
       headers,
       body: ['GET', 'HEAD'].includes(req.method) ? undefined : Buffer.concat(chunks),
     });
-    // ESA 签名：fetch(request, context, env)
-    const response = await worker.handleRequest(request, { waitUntil() {} }, env);
+    // Mirror the runtime metadata; client-supplied proxy headers are sanitized
+    // inside onRequest, exactly as they are in the deployed EdgeOne function.
+    request.eo = { clientIp: req.socket.remoteAddress || '127.0.0.1' };
+    const response = await worker.onRequest({ request, env });
     const out = {};
     response.headers.forEach((value, key) => {
       if (key === 'set-cookie') return;
@@ -114,6 +126,13 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`[dev] ESA VPS Monitor 本地模拟运行在 http://localhost:${port}`);
+  console.log(`[dev] EO VPS Monitor 本地模拟运行在 http://localhost:${port}`);
   console.log(`[dev] KV 数据文件：${kvFile}`);
 });
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    persistKv();
+    server.close(() => process.exit(0));
+  });
+}

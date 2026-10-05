@@ -7,6 +7,7 @@ import { normalizePublicMonitorRecords, normalizePublicGpuRecords } from '../src
 import { buildApiRequest } from '../src/utils/api.ts';
 import { runWithMfaStepUpRetry } from '../src/utils/mfa.ts';
 import { shouldClearAuthForStatus } from '../src/contexts/auth-state.ts';
+import { EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES } from '../../worker/src/utils/edgeone-limits.ts';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { BroadcastChannel as NativeBroadcastChannel } from 'node:worker_threads';
@@ -132,6 +133,7 @@ test('AUD-52 restore invalidates prefetched general settings and reloads restore
   const apiFetch = async path => path.includes('/upload/backup') ? { success: true } : path.endsWith('scope=site') ? { site_title: 'B' } : { record_preserve_time: '72' };
   const loadSettingsScope = productionDeclaration('src/pages/admin/SettingsLayout.tsx', 'loadSettingsScope', { ...base, apiFetch, setSettingsScope });
   const restore = productionDeclaration('src/pages/admin/SettingsSite.tsx', 'handleUploadBackup', {
+    edgeOne: true, TextEncoder, EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES,
     requestPassword: async () => 'synthetic-password', downloadBackupFile: async () => {}, apiFetch,
     backupEncryptPasswordError: productionDeclaration('src/pages/admin/SettingsSite.tsx', 'backupEncryptPasswordError', { MIN_BACKUP_PASSWORD_LENGTH: 6 }),
     toast: { success() {}, error(message) { throw new Error(message); } },
@@ -139,10 +141,36 @@ test('AUD-52 restore invalidates prefetched general settings and reloads restore
     invalidateSettingsScopes: () => productionDeclaration('src/pages/admin/SettingsLayout.tsx', 'invalidateSettingsScopes', base)(),
     clearCachedPublicSettings() {}, notifyPublicDataUpdated() {},
   });
-  await restore({ target: { files: [{ text: async () => '{"synthetic":"encrypted backup"}' }], value: 'synthetic.json' } });
+  const backupFile = new File(['{"synthetic":"encrypted backup"}'], 'synthetic.json', { type: 'application/json' });
+  await restore({ target: { files: [backupFile], value: 'synthetic.json' } });
   const general = await loadSettingsScope('general');
   assert.equal(general.record_preserve_time, '72', 'a restored general setting must replace the old prefetched value without page reload');
   assert.equal(settingsCacheRef.current.site.site_title, 'B');
+});
+
+test('EdgeOne backup UI refuses oversized files and JSON requests before backup or restore', async () => {
+  for (const [content, password, expected] of [
+    ['x'.repeat(EDGEONE_MAX_UPLOAD_FILE_BYTES + 1), 'synthetic-password', /800 KiB/],
+    [JSON.stringify({ ciphertext: 'a'.repeat(790 * 1024) }), 'p'.repeat(120 * 1024), /900 KiB/],
+  ]) {
+    const errors = [];
+    let downloads = 0;
+    let restoreRequests = 0;
+    const restore = productionDeclaration('src/pages/admin/SettingsSite.tsx', 'handleUploadBackup', {
+      edgeOne: true, TextEncoder, EDGEONE_MAX_UPLOAD_FILE_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES,
+      requestPassword: async () => password,
+      downloadBackupFile: async () => { downloads += 1; },
+      apiFetch: async () => { restoreRequests += 1; return { success: true }; },
+      toast: { success() {}, error: message => errors.push(message) },
+    });
+    const event = { target: { files: [new File([content], 'oversized.json')], value: 'oversized.json' } };
+    await restore(event);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], expected);
+    assert.equal(downloads, 0, 'oversized input must stop before downloading a pre-restore backup');
+    assert.equal(restoreRequests, 0, 'oversized input must never reach the restore API');
+    assert.equal(event.target.value, '', 'the rejected input can be selected again');
+  }
 });
 
 test('AUD-05 initial administrator form requires and sends ownership key', async () => {

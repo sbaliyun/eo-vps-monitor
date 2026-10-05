@@ -12,6 +12,7 @@ import { maskSecretPreview, isMaskedSecretPreview } from '../utils/secret-previe
 import { checkWebsiteMonitorHttp, validateWebsiteMonitorInput } from '../utils/website-monitor';
 import { readRequestBytesWithLimit } from '../utils/request-body';
 import { bytesToBase64 } from '../utils/theme-package';
+import { EDGEONE_MAX_SITE_LOGO_BYTES, EDGEONE_MAX_UPLOAD_REQUEST_BYTES } from '../utils/edgeone-limits';
 import { adminSettingsOf, defaultStoredClient, findClient, mutateCore, readCore, sortedClients, toClientView } from '../store/core';
 import type { CoreDoc, StoredClient, StoredWebsiteMonitor } from '../store/types';
 import { pruneLiveEntries, readLiveEntries } from '../store/live';
@@ -23,6 +24,7 @@ import { SITE_LOGO_KEY } from '../store/themes';
 import { queueAudit } from '../services/notify';
 import { accountRoutes } from './admin-account';
 import { systemAdminRoutes } from './admin-system';
+import { isEdgeOne } from './auth';
 import { readIntParam, readJsonObject, readJsonObjectOrArray, services, type AppContext, type HonoEnv } from './common';
 
 export const adminRoutes = new Hono<HonoEnv>();
@@ -418,7 +420,7 @@ async function websiteViews(c: AppContext, core: CoreDoc): Promise<WebsiteMonito
 }
 
 function websiteErrorMessage(code: string): string {
-  if (code === 'tcp_requires_agent_probe') return 'ESA 边缘函数无法建立 TCP 连接：TCP 监控请开启 Agent 探测（指定节点或按地区自动）';
+  if (code === 'tcp_requires_agent_probe') return '当前 EO 版本的 TCP 监控由 Agent 执行，请开启 Agent 探测（指定节点或按地区自动）';
   return `网站监控校验失败: ${code}`;
 }
 
@@ -581,8 +583,11 @@ function detectSiteLogoType(bytes: Uint8Array): string | null {
 }
 
 adminRoutes.post('/site-logo', async (c) => {
-  const body = await readRequestBytesWithLimit(c.req.raw, MAX_SITE_LOGO_BYTES + 4096);
-  if (!body.ok) return c.json({ error: `Logo 不能超过 ${MAX_SITE_LOGO_BYTES} 字节` }, 413);
+  const edgeOne = isEdgeOne(c);
+  const maxLogoBytes = edgeOne ? EDGEONE_MAX_SITE_LOGO_BYTES : MAX_SITE_LOGO_BYTES;
+  const maxRequestBytes = edgeOne ? EDGEONE_MAX_UPLOAD_REQUEST_BYTES : MAX_SITE_LOGO_BYTES + 4096;
+  const body = await readRequestBytesWithLimit(c.req.raw, maxRequestBytes);
+  if (!body.ok) return c.json({ error: edgeOne ? 'EdgeOne Logo 上传请求不能超过 900 KiB，图片不能超过 600 KiB' : `Logo 不能超过 ${maxLogoBytes} 字节` }, 413);
   let form: FormData;
   try {
     form = await new Response(body.bytes, { headers: { 'Content-Type': c.req.header('Content-Type') || '' } }).formData();
@@ -592,7 +597,7 @@ adminRoutes.post('/site-logo', async (c) => {
   const file = form.get('file');
   if (!file || typeof file === 'string') return c.json({ error: '请上传 Logo 图片' }, 400);
   const bytes = new Uint8Array(await (file as Blob).arrayBuffer());
-  if (bytes.byteLength > MAX_SITE_LOGO_BYTES) return c.json({ error: `Logo 不能超过 ${MAX_SITE_LOGO_BYTES} 字节` }, 413);
+  if (bytes.byteLength > maxLogoBytes) return c.json({ error: edgeOne ? 'EdgeOne Logo 图片不能超过 600 KiB，请压缩后上传' : `Logo 不能超过 ${maxLogoBytes} 字节` }, 413);
   const contentType = detectSiteLogoType(bytes);
   if (!contentType) return c.json({ error: 'Logo 只支持 PNG、JPG、WebP' }, 400);
   const app = services(c);
@@ -676,7 +681,7 @@ adminRoutes.post('/settings', async (c) => {
   if (body.webhook_headers_json === '') delete body.webhook_headers_json;
   if (body.webhook_password === '') delete body.webhook_password;
   if (body.notification_method === 'email') {
-    return c.json({ error: '设置校验失败', details: ['ESA 函数无法建立 SMTP 连接，请使用 Telegram 或 Webhook 通知'] }, 400);
+    return c.json({ error: '设置校验失败', details: ['当前 EO 版本未启用 SMTP，请使用 Telegram 或 Webhook 通知'] }, 400);
   }
   const normalized = sanitizeSettingsForStorage(body, { selfHost: new URL(c.req.url).hostname });
   if (!normalized.ok) return c.json({ error: '设置校验失败', details: normalized.errors }, 400);

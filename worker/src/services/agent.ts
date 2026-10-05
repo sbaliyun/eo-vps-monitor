@@ -1,7 +1,7 @@
 /**
  * Agent 接入：鉴权、策略下发、上报入库。
  *
- * Agent 以 HTTP 模式工作（ESA 函数不支持 WebSocket 服务端）：
+ * 本版本的 Agent 以 HTTP 模式工作：
  *  - GET  /api/clients/policy：拉取上报间隔、Ping 任务、网站探测任务；
  *    有人在看实时面板时返回 mode=active，Agent 切换为高频上报；
  *  - POST /api/clients/report：上报指标（空闲时批量）。

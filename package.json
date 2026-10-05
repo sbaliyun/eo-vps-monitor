@@ -1,5 +1,5 @@
 {
-  "name": "esa-vps-monitor-monorepo",
+  "name": "eo-vps-monitor-monorepo",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -12,8 +12,8 @@
   ],
   "scripts": {
     "lint": "npm --prefix frontend run lint && npm --prefix worker run lint",
-    "build": "node scripts/check-node.mjs && npm --prefix frontend run build && npm --prefix worker run build",
-    "build:function": "node scripts/build-esa.mjs",
+    "build": "node scripts/check-node.mjs && npm --prefix frontend run build && npm --prefix worker run lint && node scripts/build-edgeone.mjs",
+    "build:function": "node scripts/build-edgeone.mjs",
     "test:js": "node --test",
     "test:go": "cd agent && go test ./...",
     "test": "npm run test:js && npm run test:go",
@@ -21,7 +21,7 @@
     "verify": "npm run lint && npm run build && npm test && npm run security:check",
     "dev": "node scripts/dev-server.mjs",
     "dev:frontend": "npm --prefix frontend run dev",
-    "deploy": "npm run build && npx --yes esa-cli@latest deploy --no-preview"
+    "deploy": "npm run build && npx edgeone pages deploy ./edgeone-dist"
   },
   "devDependencies": {
     "esbuild": "0.28.1"

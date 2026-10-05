@@ -1,5 +1,5 @@
 /**
- * Shared TypeScript interfaces for ESA VPS Monitor frontend
+ * Shared TypeScript interfaces for EO VPS Monitor frontend
  */
 import { LastKnownRecord, LiveRecord } from './contexts/LiveDataContext';
 

@@ -323,7 +323,7 @@ interface LiveDataProviderProps {
   viewer?: boolean;
 }
 
-/** 阿里云 ESA 函数不提供 WebSocket 服务端，实时数据全部走 HTTP 轮询。 */
+/** EO 版本使用 HTTP 轮询读取实时数据。 */
 const LIVE_WEBSOCKET_ENABLED = false;
 
 export function LiveDataProvider({ children, enabled = true, viewer = true }: LiveDataProviderProps) {
@@ -397,7 +397,7 @@ export function LiveDataProvider({ children, enabled = true, viewer = true }: Li
     if (!enabled || !scope?.active || scope.owner !== scopeOwner) return;
     const request = scope.beginRead();
     try {
-      // ESA 版本没有 WebSocket：活跃观看窗口内带 viewer=active，服务端据此让 Agent 切到高频上报。
+      // 活跃观看窗口内带 viewer=active，服务端据此让 Agent 切到高频上报。
       const params = new URLSearchParams();
       if (includeHidden) params.set('include_hidden', '1');
       const since = activeSinceRef.current;
@@ -593,7 +593,7 @@ export function LiveDataProvider({ children, enabled = true, viewer = true }: Li
     const connect = async () => {
       if (cancelled) return;
       if (!LIVE_WEBSOCKET_ENABLED || typeof WebSocket === 'undefined') {
-        // ESA 函数不支持 WebSocket：只用缓存的 bootstrap 快照做首屏，其余交给 HTTP 轮询。
+        // 缓存的 bootstrap 快照用于首屏，后续由 HTTP 轮询更新。
         const bootstrap = includeHidden ? null : getCachedPublicBootstrap();
         const live = normalizeLiveDataResponse(bootstrap?.live);
         const seeded = live ? scope.seed(live) : null;

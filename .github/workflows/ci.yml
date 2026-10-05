@@ -41,8 +41,7 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      # Produces frontend/dist (Pages static assets) and worker/dist/esa-entry.js
-      # (the ESA function bundle referenced by esa.jsonc).
+      # Produces edgeone-dist with Pages assets, API functions and Agent sources.
       - name: Build
         run: npm run build
 

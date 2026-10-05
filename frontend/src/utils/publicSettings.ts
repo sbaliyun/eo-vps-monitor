@@ -24,7 +24,7 @@ export interface PublicSettings {
 }
 
 const DEFAULT_PUBLIC_SETTINGS: PublicSettings = {
-  site_title: 'ESA VPS Monitor',
+  site_title: 'EO VPS Monitor',
   site_subtitle: '',
   site_description: '服务器监控探针',
   language: 'zh-CN',

@@ -40,6 +40,7 @@ export async function buildEsa({ outfile = join(root, 'worker', 'dist', 'esa-ent
     legalComments: 'none',
     mainFields: ['browser', 'module', 'main'],
     conditions: ['browser', 'worker', 'import'],
+    loader: { '.sh': 'text', '.ps1': 'text' },
     define: { __BUILD_COMMIT__: JSON.stringify(commit) },
     logLevel: 'warning',
     metafile: true,

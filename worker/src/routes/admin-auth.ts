@@ -9,6 +9,7 @@ import { verifyMfaToken } from '../auth/mfa-token';
 import { getAdminSessionToken, getMfaStepUpToken, verifyAdminCsrfToken } from '../auth/session';
 import { findUserByUuid, readCore } from '../store/core';
 import { queueThrottledAudit } from '../services/notify';
+import { edgeOneMfaUnavailable, isEdgeOne } from './auth';
 import { clientIp, services, type HonoEnv } from './common';
 
 function isSafeMethod(method: string): boolean {
@@ -47,6 +48,7 @@ export const adminAuth: MiddlewareHandler<HonoEnv> = async (c, next) => {
       return c.json({ error: 'CSRF token 无效，请刷新页面后重试' }, 403);
     }
     if (isMfaStepUpProtectedRequest(c.req.method, c.req.path) && user.totp_enabled_at && user.totp_secret_enc) {
+      if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
       const stepUpToken = getMfaStepUpToken(c);
       let stepUp = null;
       try {

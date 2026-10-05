@@ -621,7 +621,7 @@ export default function AdminNotifications() {
       const result = await apiFetch('/admin/test/sendMessage', {
         method: 'POST',
         body: JSON.stringify({
-          message: 'ESA VPS Monitor 测试消息 - 通知配置成功!',
+          message: 'EO VPS Monitor 测试消息 - 通知配置成功!',
           channel: 'telegram',
           settings,
         }),
@@ -643,7 +643,7 @@ export default function AdminNotifications() {
         method: 'POST',
         body: JSON.stringify({
           channel: 'webhook',
-          message: 'ESA VPS Monitor 测试消息 - Webhook 通知配置成功!',
+          message: 'EO VPS Monitor 测试消息 - Webhook 通知配置成功!',
           settings,
         }),
       });
@@ -775,7 +775,7 @@ export default function AdminNotifications() {
                           <Select.Item value="none">关闭</Select.Item>
                           <Select.Item value="telegram">Telegram</Select.Item>
                           {notificationMethod === 'email' && (
-                            <Select.Item value="email" disabled>SMTP 邮件（ESA 不支持）</Select.Item>
+                            <Select.Item value="email" disabled>SMTP 邮件（当前 EO 版本未启用）</Select.Item>
                           )}
                           <Select.Item value="webhook">Webhook</Select.Item>
                         </Select.Content>
@@ -788,8 +788,8 @@ export default function AdminNotifications() {
                 {notificationMethod === 'email' && (
                   <Callout.Root color="amber" size="1">
                     <Callout.Text>
-                      当前通道为 SMTP 邮件（多半来自旧版备份）。ESA 函数不能建立 SMTP 连接，这个通道发不出任何通知。
-                      请改用 Telegram，或用 Webhook 转发到邮件服务（如 Resend、SendGrid 或阿里云邮件推送的 HTTP 接口）。
+                      当前通道为 SMTP 邮件（多半来自旧版备份）。当前 EO 版本未启用 SMTP，这个通道发不出任何通知。
+                      请改用 Telegram，或用 Webhook 转发到邮件服务（如 Resend、SendGrid 或提供 HTTP 接口的邮件服务）。
                     </Callout.Text>
                   </Callout.Root>
                 )}

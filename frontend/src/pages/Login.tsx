@@ -15,6 +15,9 @@ import { normalizeMfaCode, type MfaMethod } from '../utils/mfa';
 type RecoveryStatus = {
   admin_present: boolean;
   recoverable: boolean;
+  recovery_key_configured?: boolean;
+  mfa_supported?: boolean;
+  platform?: string;
 };
 
 function safeLogoUrl(value: unknown) {
@@ -174,7 +177,7 @@ export default function Login() {
       setPassword('');
       setRecoveryPassword('');
       setRecoveryKey('');
-      setRecoveryStatus({ admin_present: true, recoverable: true });
+      setRecoveryStatus((previous) => ({ ...previous, admin_present: true, recoverable: true }));
       setRecoveryMode(false);
     } catch {
       toast.error('请求失败，请稍后重试');
@@ -193,14 +196,20 @@ export default function Login() {
             <img src={siteLogoUrl || '/app-icon.png'} alt="" />
           </Box>
           <Heading size="6" style={{ fontSize: '1.5rem', letterSpacing: '-0.02em', fontWeight: 700 }}>
-            ESA VPS Monitor
+            EO VPS Monitor
           </Heading>
           <Text size="2" color="gray" style={{ marginTop: '-2px' }}>
-            阿里云 ESA 服务器监控探针
+            腾讯云 EdgeOne 服务器监控探针
           </Text>
         </Flex>
 
         <Separator size="4" mb="4" />
+
+        {recoveryStatus?.mfa_supported === false && (
+          <Text as="p" size="2" color="gray" mb="4">
+            当前 EdgeOne KV 版本暂不支持双重身份验证，请使用账号密码登录。已有双重验证账号可通过「忘记密码」恢复。
+          </Text>
+        )}
 
         {!recoveryMode && !mfaChallenge && (
         <form onSubmit={handleSubmit}>
@@ -270,7 +279,7 @@ export default function Login() {
         </form>
         )}
 
-        {!recoveryMode && mfaChallenge && (
+        {!recoveryMode && mfaChallenge && recoveryStatus?.mfa_supported !== false && (
           <form onSubmit={handleMfaSubmit}>
             <Flex direction="column" gap="4">
               <Flex align="center" gap="2">
@@ -323,6 +332,14 @@ export default function Login() {
         {recoveryMode && (
           <form onSubmit={handleRecoverySubmit}>
             <Flex direction="column" gap="4">
+              <Text size="2" color="gray">
+                {recoveryStatus?.admin_present
+                  ? '使用部署时设置的管理员恢复密钥重置账号密码。'
+                  : '首次使用需要部署时设置的 ADMIN_RECOVERY_KEY 才能创建管理员。'}
+              </Text>
+              {recoveryStatus?.recovery_key_configured === false && (
+                <Text size="2" color="red">尚未配置管理员恢复密钥，请在 EdgeOne 项目环境变量中设置 ADMIN_RECOVERY_KEY 后重新部署。</Text>
+              )}
               <label htmlFor="recovery-secret-key">
                 <Text size="2" weight="bold" style={{ marginBottom: 6, display: 'inline-block' }}>
                   恢复密钥
@@ -331,7 +348,7 @@ export default function Login() {
                   id="recovery-secret-key"
                   size="3"
                   type="password"
-                  placeholder="部署时设置的 ADMIN_RECOVERY_KEY（未设置则为 JWT_SECRET）"
+                  placeholder="部署时设置的 ADMIN_RECOVERY_KEY"
                   value={recoveryKey}
                   onChange={(e) => setRecoveryKey(e.target.value)}
                   autoComplete="off"
@@ -423,7 +440,7 @@ export default function Login() {
       </Card>
 
       <Text size="1" color="gray" style={{ position: 'fixed', bottom: 16, textAlign: 'center' }}>
-        ESA VPS Monitor {version} &middot; Powered by Alibaba Cloud ESA
+        EO VPS Monitor {version} &middot; Powered by Tencent Cloud EdgeOne
       </Text>
     </div>
   );

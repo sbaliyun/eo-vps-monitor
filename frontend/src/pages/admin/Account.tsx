@@ -31,6 +31,8 @@ import { downloadRecoveryCodes, formatRecoveryCodesText, normalizeMfaCode, reque
 type AccountTab = 'username' | 'password' | 'security';
 
 type MfaStatus = {
+  supported?: boolean;
+  unavailable_reason?: string;
   enabled: boolean;
   enabled_at: string | null;
   recovery_codes_remaining: number;
@@ -269,12 +271,17 @@ export default function AdminAccount() {
               <Text size="2" color="gray">兼容 Google Authenticator、Microsoft Authenticator、1Password 等验证器。</Text>
             </Box>
             <Badge color={mfaStatus?.enabled ? 'green' : 'gray'} size="2">
-              {mfaStatus?.enabled ? '已启用' : '未启用'}
+              {mfaStatus?.supported === false ? '暂不支持' : mfaStatus?.enabled ? '已启用' : '未启用'}
             </Badge>
           </Flex>
 
           {!mfaStatus ? (
             <Text color="gray">正在读取状态...</Text>
+          ) : mfaStatus.supported === false ? (
+            <Callout.Root color="amber">
+              <Callout.Icon><ShieldOff size={18} /></Callout.Icon>
+              <Callout.Text>{mfaStatus.unavailable_reason || '当前 EdgeOne KV 版本暂不支持双重身份验证，请使用账号密码登录。'}</Callout.Text>
+            </Callout.Root>
           ) : mfaStatus.enabled && !setup ? (
             <Flex direction="column" gap="4">
               <Callout.Root color="green"><Callout.Icon><ShieldCheck size={18} /></Callout.Icon><Callout.Text>账户已受双重身份验证保护，敏感操作确认在通过后 5 分钟内有效。</Callout.Text></Callout.Root>

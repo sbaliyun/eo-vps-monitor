@@ -32,9 +32,9 @@ interface UpdateSettings {
 }
 
 const stackItems = [
-  { icon: Cloud, title: 'ESA 函数和 Pages', text: 'API 入口、前端托管与边缘运行时' },
-  { icon: Zap, title: 'HTTP 轮询 + 请求触发维护', text: '实时数据、在线状态与定时告警（无需 WebSocket 与 Cron）' },
-  { icon: Database, title: 'ESA 边缘存储（EdgeKV）', text: '配置、历史记录、告警状态与审计日志' },
+  { icon: Cloud, title: '腾讯云 EdgeOne Pages', text: 'API 入口、前端托管与边缘函数' },
+  { icon: Zap, title: 'HTTP 轮询 + 请求触发维护', text: '实时数据与在线状态；无访问时可由外部定时服务触发告警检查' },
+  { icon: Database, title: 'EdgeOne Pages KV', text: '配置、历史记录、告警状态与审计日志；跨节点缓存可能延迟同步' },
   { icon: Code2, title: 'Hono + TypeScript', text: '边缘函数路由、鉴权与接口校验' },
   { icon: Monitor, title: 'React + Radix UI', text: '后台管理、公开状态页与图表展示' },
   { icon: Server, title: 'Go Agent', text: 'VPS 端采集、Ping、网站探测与上报' },
@@ -173,12 +173,12 @@ export default function AdminAbout() {
                   <Monitor size={40} color="white" />
                 </Box>
                 <Box style={{ minWidth: 0, flex: 1 }}>
-                  <Heading size="6">ESA VPS Monitor</Heading>
-                  <Text as="p" size="2" color="gray" mt="1">基于阿里云 ESA 函数和 Pages 的轻量 VPS 探针与公开状态页</Text>
+                  <Heading size="6">EO VPS Monitor</Heading>
+                  <Text as="p" size="2" color="gray" mt="1">基于腾讯云 EdgeOne Pages 的轻量 VPS 探针与公开状态页</Text>
                   <Flex gap="2" wrap="wrap" mt="2">
                     <Badge size="2" color="blue">{formatAppVersion(version?.version)}</Badge>
                     <Badge size="2" variant="soft" color="gray">{displayedHash}</Badge>
-                    <Badge size="2" variant="soft" color="green">Alibaba Cloud ESA</Badge>
+                    <Badge size="2" variant="soft" color="green">Tencent Cloud EdgeOne</Badge>
                   </Flex>
                 </Box>
               </Flex>
@@ -223,7 +223,7 @@ export default function AdminAbout() {
                 <Heading size="3">项目定位</Heading>
               </Flex>
               <Text size="2" color="gray" className="admin-about-position">
-                面向个人和小团队的自托管 VPS 监控面板，优先追求轻量部署、公开状态展示、低维护成本，部署在阿里云 ESA 边缘网络上，无需自建数据库。
+                面向个人和小团队的自托管 VPS 监控面板，优先追求轻量部署、公开状态展示、低维护成本，部署在腾讯云 EdgeOne Pages，使用 Pages KV 保存数据。
                 适合轻量 VPS 探针、公开服务状态页、节点资产管理、基础告警与日常运维巡检。
               </Text>
             </Card>
@@ -236,11 +236,11 @@ export default function AdminAbout() {
               <Flex direction="column" gap="3" className="admin-about-update-card">
                 <Box>
                   <Heading size="3">更新设置</Heading>
-                  <Text as="p" size="2" color="gray" mt="1">检测方式：推送编码。官方仓库最新编码不同即视为有更新。</Text>
+                  <Text as="p" size="2" color="gray" mt="1">比较已部署版本与更新源的 Git 提交编码；同步前请确认更新源包含 EO 适配。</Text>
                 </Box>
 
                 <Text size="1" className="admin-about-warning">
-                  推荐 Fork 本仓库并在 ESA「函数和 Pages」中导入该 Fork；在 GitHub 上点击 Sync fork 后，ESA 会自动重新构建部署。
+                  将 EO 适配版本推送到自己的仓库，再在 EdgeOne Pages 中导入。更新自己的 EO 仓库后，Pages 会按项目构建设置重新部署。
                 </Text>
 
                 <Box>
@@ -255,12 +255,12 @@ export default function AdminAbout() {
                     }))}
                   />
                   <Text as="p" size="1" color="gray" mt="1">
-                    填写 ESA 项目连接并部署的 Fork 仓库地址，不是官方更新源。
+                    填写 EdgeOne Pages 项目连接并部署的 EO 仓库地址，用于打开仓库并同步更新。
                   </Text>
                 </Box>
 
                 <Flex align="center" justify="between" gap="3" wrap="wrap" mt="auto">
-                  <Text size="1" color="gray">更新源：{CF_MONITOR_REPOSITORY}/main</Text>
+                  <Text size="1" color="gray">Agent 源码参考：{CF_MONITOR_REPOSITORY}/main。若下载源未发布二进制 Release，安装可能回退到源码编译；可配置自己的公开发布仓库。SSL 证书检查需使用本仓库的 Agent。</Text>
                   <Flex align="center" gap="2">
                     {updateSettingsMessage && (
                       <Text size="1" color={updateSettingsMessage === '已保存' ? 'green' : 'red'}>{updateSettingsMessage}</Text>

@@ -86,7 +86,7 @@ const IPV4_BLOCKS = [
 const REACHABLE_CHALLENGE_STATUSES = new Set([401, 403, 405, 412, 429]);
 const WEBSITE_CHECK_DUE_TOLERANCE_SECONDS = 30;
 const WEBSITE_PROBE_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (compatible; ESA-VPS-Monitor/2.0; +https://github.com/sbaliyun/esa-vps-monitor)',
+  'User-Agent': 'Mozilla/5.0 (compatible; EO-VPS-Monitor/2.1)',
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
   'Cache-Control': 'no-cache',
@@ -222,7 +222,7 @@ export function validateWebsiteMonitorInput(input: Record<string, unknown>): Web
     return { ok: false, error: 'invalid_bounds' };
   }
 
-  // ESA 边缘函数无法发起 TCP 连接：TCP 监控必须交给 Agent 探测。
+  // 本版本的 TCP 监控交给 Agent 探测。
   if (method === 'TCP' && agent_probe_mode === 'off') {
     return { ok: false, error: 'tcp_requires_agent_probe' };
   }
@@ -293,7 +293,7 @@ export function normalizeWebsiteFetchResult(input: WebsiteFetchNormalizationInpu
 }
 
 /**
- * ESA 边缘函数不能建立原始 TCP 连接，TCP 监控只能由 Agent 探测。
+ * 本版本的 TCP 监控由 Agent 探测。
  * 这里返回明确的失败原因，调用方（定时维护）会跳过 TCP 监控。
  */
 export async function checkWebsiteMonitorTcp(monitor: WebsiteProbeMonitor): Promise<{

@@ -236,7 +236,7 @@ function Assert-AgentSystemResources {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repository = "sbaliyun/esa-vps-monitor"
+$repository = "sbaliyun/cf-vps-monitor"
 $branch = "main"
 $autoBinaryUrl = $false
 
@@ -351,11 +351,12 @@ function Resolve-BuildDirectory {
   }
 
   $archiveUrl = if ([string]::IsNullOrWhiteSpace($SourceUrl)) {
-    "https://github.com/$repository/archive/refs/heads/$branch.zip"
+    $panelArchive = $Server.TrimEnd('/') + '/agent/source.zip'
+    Assert-HttpsUrl -Name "panel source archive" -Url $panelArchive
+    $panelArchive
   } else {
-    $SourceUrl
+    Join-GitHubProxy $SourceUrl
   }
-  $archiveUrl = Join-GitHubProxy $archiveUrl
   $sourceWorkDir = New-AgentTemporaryDirectory
   $archivePath = Join-Path $sourceWorkDir 'source.zip'
   $extractDir = Join-Path $sourceWorkDir 'source'
@@ -369,7 +370,7 @@ function Resolve-BuildDirectory {
 
   Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDir -Force
   $mainGo = Get-ChildItem -LiteralPath $extractDir -Recurse -Filter main.go |
-    Where-Object { $_.FullName -match "\\agent\\main\.go$" } |
+    Where-Object { $_.FullName -match "[\\/]agent[\\/]main\.go$" } |
     Select-Object -First 1
   if (-not $mainGo) {
     throw "Cannot find agent/main.go in source archive: $archiveUrl"
@@ -742,15 +743,26 @@ if ($BinaryPath -eq "" -and $BinaryUrl -ne "") {
     throw "Custom -BinaryUrl requires -ChecksumUrl for SHA256 verification."
   }
   $downloadOut = Join-Path (New-AgentTemporaryDirectory) 'cf-vps-monitor-agent.exe'
-  Invoke-DownloadFile -Url $BinaryUrl -OutFile $downloadOut
-  Test-DownloadedChecksum -Path $downloadOut -FileName (Split-Path $BinaryUrl -Leaf) -Url $ChecksumUrl
-  $BinaryPath = $downloadOut
+  try {
+    Invoke-DownloadFile -Url $BinaryUrl -OutFile $downloadOut
+  } catch {
+    if (-not $autoBinaryUrl) { throw }
+    Write-Warning "Prebuilt Agent is unavailable; building the source published by this panel."
+    if (Test-Path -LiteralPath $downloadOut) { Remove-Item -LiteralPath $downloadOut -Force }
+    $BinaryUrl = ""
+    $BuildFromSource = $true
+  }
+  if ($BinaryUrl -ne "") {
+    # A checksum failure must stop installation instead of triggering a source fallback.
+    Test-DownloadedChecksum -Path $downloadOut -FileName (Split-Path $BinaryUrl -Leaf) -Url $ChecksumUrl
+    $BinaryPath = $downloadOut
+  }
 }
 
 if ($BinaryPath -eq "" -and $BuildFromSource) {
   $go = Get-Command go -ErrorAction SilentlyContinue
   if (-not $go -and -not $DryRun) {
-    throw "Go is required for -BuildFromSource. Use the default prebuilt install or pass -BinaryUrl."
+    throw "No prebuilt Agent is available. Install Go (https://go.dev/dl/) to build the panel's source, configure AGENT_REPOSITORY to your public Release repository, or pass -BinaryUrl with -ChecksumUrl."
   }
   $buildOut = Join-Path (New-AgentTemporaryDirectory) 'cf-vps-monitor-agent.exe'
   $buildDir = Resolve-BuildDirectory

@@ -446,6 +446,7 @@ function GenerateCommandDialog({ client, open, onOpenChange }: { client: Command
   }, [serverUrl]);
 
   const cmd = buildAgentInstallCommand({
+      scriptBase: `${normalizedServerUrl}/agent`,
       platform,
       serverUrl: normalizedServerUrl,
       token: agentToken,
@@ -454,6 +455,7 @@ function GenerateCommandDialog({ client, open, onOpenChange }: { client: Command
       nodeName: client.name,
     });
   const uninstallAllCmd = buildAgentUninstallAllCommand({
+      scriptBase: `${normalizedServerUrl}/agent`,
       platform,
       serverUrl: normalizedServerUrl,
       ghproxy: installOptions.ghproxy,
