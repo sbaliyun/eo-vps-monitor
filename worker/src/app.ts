@@ -9,6 +9,7 @@ import { shortGitSha } from './utils/update-check';
 import { readAdminRecoveryKey, readEnvString } from './platform/env';
 import { checkSessionCrypto, type SessionCryptoStatus } from './auth/jwt';
 import { probeHmacRuntime } from './auth/crypto-diagnostics';
+import { checkPasswordCrypto, type PasswordCryptoStatus } from './auth/password-diagnostics';
 import { createAppServices, type AppServices } from './platform/context';
 import { isEdgeOneKvAvailable } from './platform/kv';
 import unixInstaller from '../../agent/install.sh';
@@ -126,25 +127,36 @@ export function createApp(): Hono<HonoEnv> {
     const sessionCrypto: SessionCryptoStatus = c.env.EDGEONE
       ? await checkSessionCrypto(c.env)
       : { ok: true };
+    const passwordCrypto: PasswordCryptoStatus = c.env.EDGEONE
+      ? await checkPasswordCrypto()
+      : { ok: true };
     const hmacRuntime = c.env.EDGEONE && !sessionCrypto.ok ? await probeHmacRuntime() : undefined;
     if (sessionCrypto.diagnostic) {
       console.error('[auth] session crypto self-check failed:', JSON.stringify({
         error: sessionCrypto.error, ...sessionCrypto.diagnostic, hmac: hmacRuntime,
       }));
     }
+    if (passwordCrypto.diagnostic) {
+      console.error('[auth] password crypto self-check failed:', JSON.stringify({
+        error: passwordCrypto.error, ...passwordCrypto.diagnostic,
+      }));
+    }
     return c.json({
-      ok: jwtOk && kvOk && recoveryOk && sessionCrypto.ok,
+      ok: jwtOk && kvOk && recoveryOk && sessionCrypto.ok && passwordCrypto.ok,
       platform: c.env.EDGEONE ? 'tencent-edgeone' : 'aliyun-esa',
       ...(c.env.EDGEONE ? { runtime: {
         crypto_key_constructor: typeof (globalThis as Record<string, unknown>).CryptoKey === 'function',
         session_crypto_error: sessionCrypto.error || null,
+        password_crypto_error: passwordCrypto.error || null,
         ...(sessionCrypto.diagnostic ? { session_crypto_diagnostic: sessionCrypto.diagnostic, hmac: hmacRuntime } : {}),
+        ...(passwordCrypto.diagnostic ? { password_crypto_diagnostic: passwordCrypto.diagnostic } : {}),
       } } : {}),
       checks: [
         { key: 'jwt_secret', status: jwtOk ? 'ok' : 'error', detail: jwtOk ? 'JWT_SECRET 已配置' : '缺少 JWT_SECRET 或不足 32 字节' },
         { key: 'edge_kv', status: kvOk ? 'ok' : 'error', detail: kvOk ? (isEdgeOneKvAvailable(c.env.MONITOR_KV) ? 'EdgeOne KV 绑定 MONITOR_KV 可读' : '本地内存 KV') : kvError },
         ...(c.env.EDGEONE ? [{ key: 'admin_recovery_key', status: recoveryOk ? 'ok' : 'error', detail: recoveryOk ? 'ADMIN_RECOVERY_KEY 已配置' : '请设置至少 32 字节的独立 ADMIN_RECOVERY_KEY' }] : []),
-        ...(c.env.EDGEONE ? [{ key: 'session_crypto', status: sessionCrypto.ok ? 'ok' : 'error', detail: sessionCrypto.ok ? '会话签名和验证可用' : '会话加密功能不可用，请查看函数日志' }] : []),
+        ...(c.env.EDGEONE ? [{ key: 'session_crypto', status: sessionCrypto.ok ? 'ok' : 'error', detail: sessionCrypto.ok ? '会话签名和验证可用' : '会话加密功能不可用，请查看接口诊断' },
+          { key: 'password_crypto', status: passwordCrypto.ok ? 'ok' : 'error', detail: passwordCrypto.ok ? '密码计算符合 PBKDF2 标准向量，随机盐验证可用' : '密码计算自检失败，请查看接口诊断' }] : []),
         { key: 'admin', status: adminPresent ? 'ok' : 'warning', detail: adminPresent ? '管理员已创建' : '尚未创建管理员，请访问 /login' },
       ],
     });

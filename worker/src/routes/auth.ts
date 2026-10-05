@@ -9,6 +9,7 @@ import { decryptTotpSecret, hashRecoveryCode } from '../auth/mfa';
 import { generateMfaToken, verifyMfaToken } from '../auth/mfa-token';
 import { verifyTotpCode } from '../auth/totp';
 import { hashPassword, needsPasswordRehash, validateAdminPasswordStrength, verifyPassword } from '../auth/password';
+import { loginErrorDiagnostic } from '../auth/login-diagnostics';
 import { clearAdminSessionCookie, ensureAdminCsrfCookie, getAdminSessionToken, setAdminSessionCookie, verifyAdminCsrfToken } from '../auth/session';
 import { readAdminRecoveryKey, readEnvString } from '../platform/env';
 import { findUserByUsername, findUserByUuid, mutateCore, readCore } from '../store/core';
@@ -64,19 +65,33 @@ function jwtMisconfigured(c: AppContext): Response {
   return c.json({ error: '服务端 JWT_SECRET 未正确配置（至少 32 字节）' }, 500);
 }
 
-async function completeLogin(c: AppContext, user: User, observed: Awaited<ReturnType<typeof loadRateLimits>>): Promise<Response> {
+type LoginDiagnosticContext = { stage: string; sensitive: string[] };
+
+function loginStage(diagnostic: LoginDiagnosticContext | undefined, stage: string): void {
+  if (diagnostic) diagnostic.stage = stage;
+}
+
+async function completeLogin(c: AppContext, user: User, observed: Awaited<ReturnType<typeof loadRateLimits>>, diagnostic?: LoginDiagnosticContext): Promise<Response> {
   let token: string;
+  loginStage(diagnostic, 'token_sign');
   try {
     token = await generateToken(user.uuid, user.username, user.session_version, c.env as { JWT_SECRET?: string });
   } catch (error) {
     if (error instanceof AuthConfigurationError) return jwtMisconfigured(c);
     throw error;
   }
+  diagnostic?.sensitive.push(token);
+  loginStage(diagnostic, 'session_cookie');
   setAdminSessionCookie(c, token);
+  loginStage(diagnostic, 'csrf_cookie');
   const csrfToken = ensureAdminCsrfCookie(c);
+  diagnostic?.sensitive.push(csrfToken);
   const app = services(c);
+  loginStage(diagnostic, 'rate_limit_clear');
   if ([...observed.values()].some(Boolean)) await clearObserved(app, observed);
+  loginStage(diagnostic, 'audit_queue');
   queueAudit(app, user.username, 'login', '用户登录');
+  loginStage(diagnostic, 'response');
   return c.json({ csrf_token: csrfToken, user: { uuid: user.uuid, username: user.username } });
 }
 
@@ -182,68 +197,92 @@ authRoutes.post('/admin/recovery', async (c) => {
 });
 
 authRoutes.post('/login', async (c) => {
-  const parsed = await readJsonObject(c, 8 * 1024);
-  if (!parsed.ok) return parsed.response;
-  const { username, password } = parsed.body;
-  if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
-    return c.json({ error: '用户名和密码不能为空' }, 400);
-  }
-  if (username.length > MAX_LOGIN_USERNAME_LENGTH || password.length > MAX_LOGIN_PASSWORD_LENGTH) {
-    return c.json({ error: '用户名或密码长度超出限制' }, 400);
-  }
-  const app = services(c);
-  const ip = clientIp(c);
-  const buckets = loginRateLimitBuckets(ip, username);
-  const states = await loadRateLimits(app, buckets);
-  const retryAfter = retryAfterSeconds(states, app.now());
-  if (retryAfter > 0) {
-    c.header('Retry-After', String(retryAfter));
-    auditLoginFailure(c, username, ip, 'rate_limited');
-    return c.json({ error: `登录尝试过于频繁，请 ${retryAfter} 秒后再试` }, 429);
-  }
-
-  const core = await readCore(app, 0);
-  const user = findUserByUsername(core, username);
-  if (!user) {
-    await verifyPassword(password, DUMMY_ADMIN_PASSWORD_HASH);
-    await recordFailures(app, buckets, app.now());
-    auditLoginFailure(c, username, ip, 'unknown_user');
-    if (core.users.length === 0) {
-      const message = isEdgeOne(c)
-        ? '请先通过登录页「忘记密码」入口，使用部署时设置的 ADMIN_RECOVERY_KEY 创建管理员账号'
-        : '请先在登录页创建管理员账号';
-      return c.json({ error: message }, 409);
+  const diagnostic: LoginDiagnosticContext = {
+    stage: 'request_json',
+    sensitive: ['JWT_SECRET', 'ADMIN_RECOVERY_KEY', 'CRON_SECRET']
+      .map(key => c.env[key]).filter((value): value is string => typeof value === 'string'),
+  };
+  try {
+    const parsed = await readJsonObject(c, 8 * 1024);
+    if (!parsed.ok) return parsed.response;
+    const { username, password } = parsed.body;
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+      return c.json({ error: '用户名和密码不能为空' }, 400);
     }
-    return c.json({ error: '用户名或密码错误' }, 401);
-  }
-  if (!await verifyPassword(password, user.passwd)) {
-    await recordFailures(app, buckets, app.now());
-    auditLoginFailure(c, username, ip, 'invalid_password');
-    return c.json({ error: '用户名或密码错误' }, 401);
-  }
-  if (needsPasswordRehash(user.passwd)) {
-    const hashed = await hashPassword(password);
-    await mutateCore(app, (doc) => {
-      const target = findUserByUuid(doc, user.uuid);
-      if (target) target.passwd = hashed;
-    });
-  }
-  if (user.totp_enabled_at && user.totp_secret_enc) {
-    if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
-    try {
-      const challenge = await generateMfaToken({
-        userId: user.uuid,
-        username: user.username,
-        sessionVersion: user.session_version,
-        purpose: 'mfa-login',
-      }, c.env as { JWT_SECRET?: string });
-      return c.json({ code: 'MFA_REQUIRED', mfa_required: true, challenge, methods: ['totp', 'recovery_code'] });
-    } catch (error) {
-      if (error instanceof AuthConfigurationError) return jwtMisconfigured(c);
-      throw error;
+    if (username.length > MAX_LOGIN_USERNAME_LENGTH || password.length > MAX_LOGIN_PASSWORD_LENGTH) {
+      return c.json({ error: '用户名或密码长度超出限制' }, 400);
     }
+    diagnostic.sensitive.push(username, password);
+    const app = services(c);
+    const ip = clientIp(c);
+    diagnostic.sensitive.push(ip);
+    const buckets = loginRateLimitBuckets(ip, username);
+    diagnostic.stage = 'rate_limit_read';
+    const states = await loadRateLimits(app, buckets);
+    const retryAfter = retryAfterSeconds(states, app.now());
+    if (retryAfter > 0) {
+      c.header('Retry-After', String(retryAfter));
+      auditLoginFailure(c, username, ip, 'rate_limited');
+      return c.json({ error: `登录尝试过于频繁，请 ${retryAfter} 秒后再试` }, 429);
+    }
+    diagnostic.stage = 'core_read';
+    const core = await readCore(app, 0);
+    for (const account of core.users) diagnostic.sensitive.push(account.username, account.uuid, account.passwd);
+    const user = findUserByUsername(core, username);
+    diagnostic.stage = 'password_verify';
+    if (!user) {
+      await verifyPassword(password, DUMMY_ADMIN_PASSWORD_HASH);
+      diagnostic.stage = 'rate_limit_record';
+      await recordFailures(app, buckets, app.now());
+      auditLoginFailure(c, username, ip, 'unknown_user');
+      if (core.users.length === 0) {
+        const message = isEdgeOne(c)
+          ? '请先通过登录页「忘记密码」入口，使用部署时设置的 ADMIN_RECOVERY_KEY 创建管理员账号'
+          : '请先在登录页创建管理员账号';
+        return c.json({ error: message }, 409);
+      }
+      return c.json({ error: '用户名或密码错误' }, 401);
+    }
+    if (!await verifyPassword(password, user.passwd)) {
+      diagnostic.stage = 'rate_limit_record';
+      await recordFailures(app, buckets, app.now());
+      auditLoginFailure(c, username, ip, 'invalid_password');
+      return c.json({ error: '用户名或密码错误' }, 401);
+    }
+    if (needsPasswordRehash(user.passwd)) {
+      diagnostic.stage = 'password_rehash';
+      const hashed = await hashPassword(password);
+      diagnostic.sensitive.push(hashed);
+      diagnostic.stage = 'password_store';
+      await mutateCore(app, (doc) => {
+        const target = findUserByUuid(doc, user.uuid);
+        if (target) target.passwd = hashed;
+      });
+    }
+    if (user.totp_enabled_at && user.totp_secret_enc) {
+      if (isEdgeOne(c)) return edgeOneMfaUnavailable(c);
+      diagnostic.stage = 'mfa_challenge';
+      try {
+        const challenge = await generateMfaToken({
+          userId: user.uuid,
+          username: user.username,
+          sessionVersion: user.session_version,
+          purpose: 'mfa-login',
+        }, c.env as { JWT_SECRET?: string });
+        return c.json({ code: 'MFA_REQUIRED', mfa_required: true, challenge, methods: ['totp', 'recovery_code'] });
+      } catch (error) {
+        if (error instanceof AuthConfigurationError) return jwtMisconfigured(c);
+        throw error;
+      }
+    }
+    return await completeLogin(c, user, states, diagnostic);
+  } catch (error) {
+    if (error instanceof Error && (error as Error & { status?: number }).status === 413) throw error;
+    if (!isEdgeOne(c)) throw error;
+    const detail = loginErrorDiagnostic(diagnostic.stage, error, diagnostic.sensitive);
+    console.error('[auth] login failed:', JSON.stringify(detail));
+    return c.json({ error: '服务器内部错误', diagnostic: detail }, 500);
   }
-  return completeLogin(c, user, states);
 });
 
 /** 校验 TOTP 或恢复码，并在 core 中消费（防重放）。 */

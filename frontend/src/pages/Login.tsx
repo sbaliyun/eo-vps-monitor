@@ -10,7 +10,7 @@ import { removeActiveThemeStylesheet } from '../utils/activeThemeStylesheet';
 import { normalizeDisplayTheme } from '../utils/displayTheme';
 import { fetchPublicSettings } from '../utils/publicSettings';
 import { formatAppVersion } from '../utils/version';
-import { normalizeMfaCode, type MfaMethod } from '../utils/mfa';
+import { normalizeMfaCode, type LoginResult, type MfaMethod } from '../utils/mfa';
 
 type RecoveryStatus = {
   admin_present: boolean;
@@ -44,6 +44,7 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loginError, setLoginError] = useState<Extract<LoginResult, { kind: 'error' }> | null>(null);
   const [mfaChallenge, setMfaChallenge] = useState('');
   const [mfaMethod, setMfaMethod] = useState<MfaMethod>('totp');
   const [mfaCode, setMfaCode] = useState('');
@@ -97,6 +98,7 @@ export default function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError(null);
     if (!username || !password) {
       toast.error('请输入用户名和密码');
       return;
@@ -107,6 +109,7 @@ export default function Login() {
     setLoading(false);
 
     if (result.kind === 'error') {
+      setLoginError(result);
       toast.error(result.error);
       return;
     }
@@ -123,6 +126,7 @@ export default function Login() {
 
   const handleMfaSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setLoginError(null);
     const code = normalizeMfaCode(mfaCode, mfaMethod);
     if (!code) {
       toast.error(mfaMethod === 'totp' ? '请输入 6 位动态验证码' : '恢复码格式无效');
@@ -133,6 +137,7 @@ export default function Login() {
     const result = await completeMfaLogin(mfaChallenge, mfaMethod, code);
     setLoading(false);
     if (result.kind === 'error') {
+      setLoginError(result);
       toast.error(result.error);
       if (/失效|重新登录/.test(result.error)) {
         setMfaChallenge('');
@@ -209,6 +214,49 @@ export default function Login() {
           <Text as="p" size="2" color="gray" mb="4">
             当前 EdgeOne KV 版本暂不支持双重身份验证，请使用账号密码登录。已有双重验证账号可通过「忘记密码」恢复。
           </Text>
+        )}
+
+        {!recoveryMode && loginError && (
+          <Box mb="4">
+            <Text as="p" size="2" color="red" role="alert" style={{ overflowWrap: 'anywhere' }}>
+              {loginError.error}
+            </Text>
+            {loginError.diagnostic && (
+              <details style={{ marginTop: 8, fontSize: 13 }}>
+                <summary style={{ cursor: 'pointer' }}>错误详情</summary>
+                <dl style={{ marginBottom: 0, overflowWrap: 'anywhere' }}>
+                  {loginError.diagnostic.stage !== undefined && (
+                    <>
+                      <dt>阶段</dt>
+                      <dd style={{ margin: '4px 0 12px' }}>{loginError.diagnostic.stage}</dd>
+                    </>
+                  )}
+                  {loginError.diagnostic.error !== undefined && (
+                    <>
+                      <dt>错误</dt>
+                      <dd style={{ margin: '4px 0 12px' }}>{loginError.diagnostic.error}</dd>
+                    </>
+                  )}
+                  {loginError.diagnostic.message !== undefined && (
+                    <>
+                      <dt>信息</dt>
+                      <dd style={{ margin: '4px 0 12px' }}>{loginError.diagnostic.message}</dd>
+                    </>
+                  )}
+                  {loginError.diagnostic.stack !== undefined && (
+                    <>
+                      <dt>堆栈</dt>
+                      <dd style={{ margin: '4px 0 0' }}>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', maxHeight: 240, overflowY: 'auto' }}>
+                          {loginError.diagnostic.stack}
+                        </pre>
+                      </dd>
+                    </>
+                  )}
+                </dl>
+              </details>
+            )}
+          </Box>
         )}
 
         {!recoveryMode && !mfaChallenge && (

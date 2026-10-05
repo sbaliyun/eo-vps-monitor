@@ -5,10 +5,24 @@ export type AuthUser = {
   username: string;
 };
 
+export type LoginDiagnostic = {
+  stage?: string;
+  error?: string;
+  message?: string;
+  stack?: string;
+};
+
 export type LoginResult =
   | { kind: 'success'; user: AuthUser }
   | { kind: 'mfa_required'; challenge: string; methods: MfaMethod[] }
-  | { kind: 'error'; error: string };
+  | { kind: 'error'; error: string; diagnostic?: LoginDiagnostic };
+
+const LOGIN_DIAGNOSTIC_LIMITS = {
+  stage: 128,
+  error: 256,
+  message: 2048,
+  stack: 8192,
+} as const;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
@@ -35,7 +49,24 @@ export function parseLoginResponse(status: number, payload: unknown): LoginResul
       : [];
     return { kind: 'mfa_required', challenge: data.challenge, methods };
   }
-  return { kind: 'error', error: typeof data.error === 'string' ? data.error : '登录失败' };
+  const result: Extract<LoginResult, { kind: 'error' }> = {
+    kind: 'error',
+    error: typeof data.error === 'string' ? data.error : '登录失败',
+  };
+  if (status === 500) {
+    const raw = asRecord(data.diagnostic);
+    if (raw) {
+      const diagnostic: LoginDiagnostic = {};
+      for (const field of Object.keys(LOGIN_DIAGNOSTIC_LIMITS) as Array<keyof LoginDiagnostic>) {
+        const value = raw[field];
+        if (typeof value === 'string') {
+          diagnostic[field] = value.slice(0, LOGIN_DIAGNOSTIC_LIMITS[field]);
+        }
+      }
+      if (Object.keys(diagnostic).length) result.diagnostic = diagnostic;
+    }
+  }
+  return result;
 }
 
 export function normalizeMfaCode(value: string, method: MfaMethod): string | null {
