@@ -91,6 +91,54 @@ test('candidate tokens and existing Hono tokens are mutually compatible', async 
   assert.equal(verified.purpose, 'admin-session');
 });
 
+test('HMAC JWTs interoperate with existing tokens when the EO runtime rejects object hashes', async () => {
+  const calls = [];
+  const subtle = {
+    async importKey(format, bytes, algorithm, extractable, usages) {
+      if (typeof algorithm.hash !== 'string') throw new Error('Param Invalid');
+      calls.push({ method: 'importKey', hash: algorithm.hash, usages: [...usages] });
+      return webcrypto.subtle.importKey(format, bytes, algorithm, extractable, usages);
+    },
+    async sign(algorithm, ...args) {
+      assert.equal(typeof algorithm, 'object', 'The adapter must preserve the signing algorithm object');
+      calls.push({ method: 'sign', hash: algorithm.hash });
+      return webcrypto.subtle.sign(algorithm, ...args);
+    },
+    async verify(algorithm, ...args) {
+      assert.equal(typeof algorithm, 'object', 'The adapter must preserve the verification algorithm object');
+      calls.push({ method: 'verify', hash: algorithm.hash });
+      return webcrypto.subtle.verify(algorithm, ...args);
+    },
+  };
+  const result = await build({
+    absWorkingDir: root, stdin: { contents: "export { sign, verify } from 'hono/jwt';", resolveDir: root },
+    bundle: true, platform: 'browser', format: 'iife', globalName: 'HonoEdgeOne', write: false,
+    plugins: [honoCryptoKeyCompatibilityPlugin()],
+  });
+  const context = vm.createContext({ TextEncoder, TextDecoder, atob, btoa, crypto: { subtle }, CryptoKey: globalThis.CryptoKey });
+  vm.runInContext(result.outputFiles[0].text, context);
+  for (const algorithm of ['HS256', 'HS384', 'HS512']) {
+    const previous = await sign(claims, env.JWT_SECRET, algorithm);
+    assert.equal((await context.HonoEdgeOne.verify(previous, env.JWT_SECRET, algorithm)).username, identity.username);
+    const generated = await context.HonoEdgeOne.sign(claims, env.JWT_SECRET, algorithm);
+    assert.equal((await context.HonoEdgeOne.verify(generated, env.JWT_SECRET, algorithm)).username, identity.username);
+    assert.equal((await verify(generated, env.JWT_SECRET, algorithm)).username, identity.username);
+  }
+  assert.deepEqual([...new Set(calls.map(call => call.hash))], ['SHA-256', 'SHA-384', 'SHA-512']);
+  assert.ok(calls.filter(call => call.method === 'importKey').every(call => call.usages.length === 1));
+  const application = await makeRuntime(true, subtle);
+  const session = await application.generateToken(identity.userId, identity.username, 1, env);
+  assert.deepEqual(JSON.parse(JSON.stringify(await application.verifyAdminToken(session, env))), identity);
+});
+
+test('the adapter preserves non-HMAC algorithms and the original sign/verify calls', async () => {
+  const original = await readFile(join(root, 'node_modules/hono/dist/utils/jwt/jws.js'), 'utf8');
+  const patched = patchHonoJws(original, { name: 'hono', version: '4.13.7' });
+  assert.equal(patched.slice(0, patched.indexOf('function getKeyAlgorithm')), original.slice(0, original.indexOf('function getKeyAlgorithm')));
+  const untouched = source => source.slice(source.indexOf('    case "RS256":'), source.indexOf('function isCryptoKey'));
+  assert.equal(untouched(patched), untouched(original));
+});
+
 test('candidate rejects both signature and payload tampering', async () => {
   const token = await sign(claims, env.JWT_SECRET, 'HS256');
   const [header, payload, signature] = token.split('.');
@@ -165,4 +213,19 @@ test('the plugin fails the build if module resolution stops loading the expected
     stdin: { contents: 'export const value = 1;' }, bundle: true, write: false,
     plugins: [honoCryptoKeyCompatibilityPlugin()], logLevel: 'silent',
   }), /Expected one Hono JWT compatibility patch, applied 0/);
+});
+
+test('the plugin fails the build with a clear diagnostic if any HMAC branch changes', async () => {
+  const original = await readFile(join(root, 'node_modules/hono/dist/utils/jwt/jws.js'), 'utf8');
+  for (const digest of ['256', '384', '512']) {
+    const fixture = join(temporary, `hmac-${digest}`, 'node_modules/hono');
+    const entry = join(fixture, 'dist/utils/jwt/jws.js');
+    await mkdir(dirname(entry), { recursive: true });
+    await writeFile(join(fixture, 'package.json'), JSON.stringify({ name: 'hono', version: '4.13.7' }));
+    await writeFile(entry, original.replace(`          name: "SHA-${digest}"`, `          name: "SHA-${digest}-changed"`));
+    await assert.rejects(
+      () => build({ entryPoints: [entry], bundle: true, write: false, plugins: [honoCryptoKeyCompatibilityPlugin()], logLevel: 'silent' }),
+      /Hono HMAC algorithm source changed/,
+    );
+  }
 });

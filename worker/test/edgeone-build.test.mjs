@@ -43,7 +43,23 @@ function loadLikeEdgeOneCli(entry) {
     // EdgeOne supplies subtle crypto without necessarily exposing CryptoKey.
     // Do not leak Node's webcrypto/CryptoKey globals into this simulated runtime.
     crypto: {
-      subtle: webcrypto.subtle,
+      subtle: new Proxy(webcrypto.subtle, {
+        get(target, property) {
+          const method = Reflect.get(target, property, target);
+          if (typeof method !== 'function') return method;
+          if (property === 'importKey') {
+            return (...args) => {
+              const algorithm = args[2];
+              // Reproduce the cloud error found by the deployed HMAC probe.
+              if (algorithm?.name === 'HMAC' && typeof algorithm.hash !== 'string') {
+                throw new Error('Param Invalid');
+              }
+              return method.apply(target, args);
+            };
+          }
+          return method.bind(target);
+        },
+      }),
       getRandomValues: webcrypto.getRandomValues.bind(webcrypto),
       randomUUID: webcrypto.randomUUID.bind(webcrypto),
     },

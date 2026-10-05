@@ -21,6 +21,35 @@ const COMPATIBLE_IS_CRYPTO_KEY = `function isCryptoKey(key) {
   }
   return key instanceof CryptoKey;
 }`;
+const EXPECTED_HMAC_ALGORITHMS = `function getKeyAlgorithm(name) {
+  switch (name) {
+    case "HS256":
+      return {
+        name: "HMAC",
+        hash: {
+          name: "SHA-256"
+        }
+      };
+    case "HS384":
+      return {
+        name: "HMAC",
+        hash: {
+          name: "SHA-384"
+        }
+      };
+    case "HS512":
+      return {
+        name: "HMAC",
+        hash: {
+          name: "SHA-512"
+        }
+      };`;
+// EO accepts SHA identifiers as strings but rejects the equivalent nested
+// object during HMAC key import. Keep Hono's signing/verification algorithms.
+const COMPATIBLE_HMAC_ALGORITHMS = EXPECTED_HMAC_ALGORITHMS.replace(
+  /hash: \{\n          name: "(SHA-(?:256|384|512))"\n        \}/g,
+  'hash: "$1"',
+);
 
 export function patchHonoJws(source, packageInfo) {
   if (packageInfo.name !== 'hono' || packageInfo.version !== EXPECTED_HONO_VERSION) {
@@ -30,7 +59,12 @@ export function patchHonoJws(source, packageInfo) {
   if (occurrences !== 1) {
     throw new Error('Hono isCryptoKey source changed; review the EdgeOne JWT compatibility adapter');
   }
-  return source.replace(EXPECTED_IS_CRYPTO_KEY, COMPATIBLE_IS_CRYPTO_KEY);
+  if (source.split(EXPECTED_HMAC_ALGORITHMS).length - 1 !== 1) {
+    throw new Error('Hono HMAC algorithm source changed; review the EdgeOne JWT compatibility adapter');
+  }
+  return source
+    .replace(EXPECTED_IS_CRYPTO_KEY, COMPATIBLE_IS_CRYPTO_KEY)
+    .replace(EXPECTED_HMAC_ALGORITHMS, COMPATIBLE_HMAC_ALGORITHMS);
 }
 
 export function honoCryptoKeyCompatibilityPlugin() {
