@@ -70,7 +70,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 安装器先尝试下载 `AGENT_REPOSITORY` 的 Release；默认下载源没有可用 Release 时，从当前站点下载本版本 Agent 源码归档并编译。这条路径需要 VPS 安装 Go，具体最低版本以 `agent/go.mod` 为准，同时需要能下载 Go 模块。无 Go 且无可用 Release 时安装器会明确报错，不会假装安装成功。
 
-可将本版本推送到自己的公开仓库，修复下文的依赖安全门禁后运行 **Actions → Agent Release** 发布二进制，然后设置 `AGENT_REPOSITORY=你的用户名/仓库名` 并重新部署。避免将与当前面板不兼容的 Agent Release 作为下载源。
+推送代码会触发 CI；全部检查通过后编译 Linux AMD64/ARM64、macOS AMD64/ARM64、FreeBSD AMD64、Windows AMD64 的 Agent，并在该任务的 **Artifacts** 中保存二进制、`SHA256SUMS` 和提交信息，保留 14 天。CI 版本标为 `dev-提交号`。正式版本通过 **Actions → Agent Release** 填写版本号发布，然后设置 `AGENT_REPOSITORY=你的用户名/仓库名` 并重新部署。避免将与当前面板不兼容的 Agent Release 作为下载源。
 
 公开 CF Agent 的基本 HTTP 上报协议可兼容；**SSL 证书探测需要本版本 Agent**，其他来源的旧 Agent 可能没有该功能。安装后的可用性应以节点真实上报为准。
 
@@ -140,7 +140,7 @@ EO 构建为 Hono 4.13.7 的字符串 JWT 密钥判断与 HMAC 哈希参数增�
 
 完整仓库回归不能在当前 macOS 环境宣称全绿：原有 Linux 服务/权限夹具存在平台差异，已在未修改的 ESA 基线复现。另修复了原有 IPv6 测试夹具：BSD 平台同时模拟 `ping6`，避免误调用真实网络；Go 业务源码没有改动。
 
-当前依赖审计发现 Tailwind 3 的 `braces` 链有 5 项 high 报告，集中在构建工具依赖；`npm audit --omit=dev` 为 0 项，但包含开发依赖的检查仍失败。`npm audit` 给出的完整修复建议是升级 Tailwind 4。没有为了迁移静默跳过安全检查：`security:check` 会失败，GitHub Actions 的 Deploy 和 Agent Release 工作流也会受此安全门禁阻止。这项主要版本升级需另行验证。
+已移除未被产品样式使用的 Tailwind 3 插件及其 `braces` 依赖链；保留 Autoprefixer，完整生产 CSS 的属性和值一致。随后将 PostCSS 的间接依赖 `source-map-js` 从 1.2.1 更新到修复版本 1.2.2，解决 GHSA-68fv-2mgg-jv7q。包含开发依赖的 `npm audit` 和 Go `govulncheck` 继续要求零漏洞。Deploy 和 Agent Release 继续使用同一 CI 安全门禁。
 
 ## 目录
 

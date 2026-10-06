@@ -89,3 +89,43 @@ jobs:
 
       - name: Dependency and toolchain security
         run: npm run security:check
+
+      - name: Build Agent binaries
+        working-directory: agent
+        env:
+          CGO_ENABLED: '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          agent_build_dir="$RUNNER_TEMP/eo-vps-monitor-agent"
+          mkdir -p "$agent_build_dir"
+          agent_build_version="dev-${GITHUB_SHA:0:7}"
+          ldflags="-s -w -X main.Version=${agent_build_version}"
+
+          build() {
+            local goos="$1"
+            local goarch="$2"
+            local output="$3"
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags="$ldflags" -o "${agent_build_dir}/${output}" .
+          }
+
+          build linux amd64 cf-vps-monitor-agent-linux-amd64
+          build linux arm64 cf-vps-monitor-agent-linux-arm64
+          build darwin amd64 cf-vps-monitor-agent-darwin-amd64
+          build darwin arm64 cf-vps-monitor-agent-darwin-arm64
+          build freebsd amd64 cf-vps-monitor-agent-freebsd-amd64
+          build windows amd64 cf-vps-monitor-agent-windows-amd64.exe
+          printf '%s\n' "repository=$GITHUB_REPOSITORY" "commit=$GITHUB_SHA" "version=$agent_build_version" > "$agent_build_dir/BUILD_INFO"
+          (
+            cd "$agent_build_dir"
+            sha256sum cf-vps-monitor-agent-* > SHA256SUMS
+          )
+
+      - name: Upload Agent binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: eo-vps-monitor-agent-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/eo-vps-monitor-agent/
+          if-no-files-found: error
+          retention-days: 14
