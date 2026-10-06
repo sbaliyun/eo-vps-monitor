@@ -1,6 +1,9 @@
 name: Agent Release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -29,7 +32,7 @@ jobs:
         working-directory: agent
     env:
       CGO_ENABLED: '0'
-      AGENT_VERSION: ${{ inputs.version }}
+      AGENT_VERSION: ${{ inputs.version || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -53,12 +56,29 @@ jobs:
           set -euo pipefail
           AGENT_VERSION_TAG_PATH="$(node ../scripts/verify-release-assets.mjs --version-path "$AGENT_VERSION")"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          if git ls-remote --exit-code --tags origin "refs/tags/${AGENT_VERSION}" >/dev/null; then
-            echo "Version ${AGENT_VERSION} already has a tag. Choose a new version; existing assets are immutable." >&2
-            exit 1
+          case "$GITHUB_EVENT_NAME" in
+            push) test "$GITHUB_REF" = "refs/tags/${AGENT_VERSION}" ;;
+            workflow_dispatch) ;;
+            *) echo "Unsupported release event: ${GITHUB_EVENT_NAME}" >&2; exit 1 ;;
+          esac
+          if tag_ref="$(git ls-remote --exit-code --tags origin "refs/tags/${AGENT_VERSION}" "refs/tags/${AGENT_VERSION}^{}")"; then
+            # Annotated tags point to a tag object; prefer their peeled commit.
+            tag_sha="$(printf '%s\n' "$tag_ref" | awk -v tag="refs/tags/${AGENT_VERSION}" '
+              $2 == tag { direct = $1 }
+              $2 == tag "^{}" { peeled = $1 }
+              END { print peeled ? peeled : direct }
+            ')"
+            if [ "$GITHUB_EVENT_NAME" != push ] || [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "Version ${AGENT_VERSION} already has a tag outside this push. Choose a new version; existing assets are immutable." >&2
+              exit 1
+            fi
           else
             tag_status=$?
             if [ "$tag_status" -ne 2 ]; then exit "$tag_status"; fi
+            if [ "$GITHUB_EVENT_NAME" = push ]; then
+              echo "The triggering version tag no longer exists." >&2
+              exit 1
+            fi
           fi
           # List succeeds even when the version does not exist, and fails closed
           # on authentication/network errors. Draft releases count as used too.
@@ -113,10 +133,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "$AGENT_VERSION_TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/${AGENT_VERSION_TAG}"
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag_ref="$(git ls-remote --exit-code --tags origin "refs/tags/${AGENT_VERSION_TAG}" "refs/tags/${AGENT_VERSION_TAG}^{}")"
+            tag_sha="$(printf '%s\n' "$tag_ref" | awk -v tag="refs/tags/${AGENT_VERSION_TAG}" '
+              $2 == tag { direct = $1 }
+              $2 == tag "^{}" { peeled = $1 }
+              END { print peeled ? peeled : direct }
+            ')"
+            test "$tag_sha" = "$GITHUB_SHA"
+            echo "Using the verified pushed tag ${AGENT_VERSION_TAG}."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag "$AGENT_VERSION_TAG" "$GITHUB_SHA"
+            git push origin "refs/tags/${AGENT_VERSION_TAG}"
+          fi
 
       - name: Publish immutable agent release
         env:
@@ -124,8 +155,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag_ref="$(git ls-remote --exit-code --tags origin "refs/tags/${AGENT_VERSION_TAG}")"
-          test "${tag_ref%%[[:space:]]*}" = "$GITHUB_SHA"
+          tag_ref="$(git ls-remote --exit-code --tags origin "refs/tags/${AGENT_VERSION_TAG}" "refs/tags/${AGENT_VERSION_TAG}^{}")"
+          tag_sha="$(printf '%s\n' "$tag_ref" | awk -v tag="refs/tags/${AGENT_VERSION_TAG}" '
+            $2 == tag { direct = $1 }
+            $2 == tag "^{}" { peeled = $1 }
+            END { print peeled ? peeled : direct }
+          ')"
+          test "$tag_sha" = "$GITHUB_SHA"
           release_notes="${RUNNER_TEMP}/agent-release-notes.txt"
           release_metadata="${RUNNER_TEMP}/agent-release-metadata.json"
           printf 'Immutable release for %s@%s.\nArtifacts include GitHub artifact attestations.\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" > "$release_notes"

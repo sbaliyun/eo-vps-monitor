@@ -84,6 +84,7 @@ test('R-A09 every publishable version resolves through all three real installers
   for (const vector of vectors) await t.test(JSON.stringify(vector.tag), () => {
     const commandLog = join(root, 'commands.log');
     const env = { ...process.env, REAUDIT_RELEASE_TAG: vector.tag, AGENT_VERSION: vector.tag,
+      GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_REF: 'refs/heads/main',
       GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'synthetic/repository', GITHUB_ENV: posix(join(root, 'github-env')),
       REAUDIT_COMMAND_LOG: posix(commandLog), NODE_EXECUTABLE: process.execPath,
       REAL_VERIFY_SCRIPT: join(repo, 'scripts', 'verify-release-assets.mjs') };
