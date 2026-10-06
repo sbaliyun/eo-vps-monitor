@@ -12,6 +12,7 @@ await writeFile(join(tmp, 'agentInstallCommand.ts'), commandSource.replace("from
 
 const { buildAgentInstallCommand, buildAgentUninstallAllCommand, defaultAgentInstallOptions } = await import(pathToFileURL(join(tmp, 'agentInstallCommand.ts')).href);
 const { CF_MONITOR_REPOSITORY } = await import(pathToFileURL(join(tmp, 'projectLinks.ts')).href);
+assert.equal(CF_MONITOR_REPOSITORY, 'sbaliyun/eo-vps-monitor');
 
 const base = {
   serverUrl: 'https://panel.example',

@@ -236,7 +236,7 @@ function Assert-AgentSystemResources {
 }
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repository = "sbaliyun/cf-vps-monitor"
+$repository = "sbaliyun/eo-vps-monitor"
 $branch = "main"
 $autoBinaryUrl = $false
 

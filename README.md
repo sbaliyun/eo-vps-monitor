@@ -41,7 +41,7 @@ CLI 输出是部署证据，本地构建成功不代表已经上线。有关产�
 | `JWT_SECRET` | 是 | 至少 32 字节的随机会话签名密钥 |
 | `ADMIN_RECOVERY_KEY` | 是 | 至少 32 字节的独立随机管理员初始化/恢复密钥，与 JWT 密钥使用不同值 |
 | `CRON_SECRET` | 建议 | 外部定时任务的密钥；未设置时由 JWT 密钥派生 |
-| `AGENT_REPOSITORY` | 否 | 可公开下载 Agent Release 的 `owner/repo`；默认 `sbaliyun/cf-vps-monitor` |
+| `AGENT_REPOSITORY` | 否 | 可公开下载 Agent Release 的 `owner/repo`；默认 `sbaliyun/eo-vps-monitor`；使用自己的发布仓库时再覆盖 |
 | `LIVE_SHARDS` | 否 | 实时状态分片数，1–4，默认 1；增加分片会增加读取次数 |
 | `KV_OPS_PER_REQUEST` | 否 | 应用基础 KV 操作预算，默认 8；完整实时快照会按节点数补足必需读取额度，维护仍使用基础预算 |
 | `SUBREQUESTS_PER_REQUEST` | 否 | 应用自己的出站请求预算，默认 4 |
@@ -70,7 +70,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 安装器先尝试下载 `AGENT_REPOSITORY` 的 Release；默认下载源没有可用 Release 时，从当前站点下载本版本 Agent 源码归档并编译。这条路径需要 VPS 安装 Go，具体最低版本以 `agent/go.mod` 为准，同时需要能下载 Go 模块。无 Go 且无可用 Release 时安装器会明确报错，不会假装安装成功。
 
-推送代码会触发 CI；全部检查通过后编译 Linux AMD64/ARM64、macOS AMD64/ARM64、FreeBSD AMD64、Windows AMD64 的 Agent，并在该任务的 **Artifacts** 中保存二进制、`SHA256SUMS` 和提交信息，保留 14 天。CI 版本标为 `dev-提交号`。正式版本通过 **Actions → Agent Release** 填写版本号发布，也可在已通过检查的提交上创建并推送新的 `vSemVer` 标签（例如 `git tag v2.1.0 HEAD`、`git push origin refs/tags/v2.1.0`）触发同一工作流。标签名即发布版本；轻量和附注标签均会核对实际提交，已存在的 Release（包括草稿）会拒绝覆盖。然后设置 `AGENT_REPOSITORY=你的用户名/仓库名` 并重新部署。避免将与当前面板不兼容的 Agent Release 作为下载源。
+推送代码会触发 CI；全部检查通过后编译 Linux AMD64/ARM64、macOS AMD64/ARM64、FreeBSD AMD64、Windows AMD64 的 Agent，并在该任务的 **Artifacts** 中保存二进制、`SHA256SUMS` 和提交信息，保留 14 天。CI 版本标为 `dev-提交号`。正式版本通过 **Actions → Agent Release** 填写版本号发布，也可在已通过检查的提交上创建并推送新的 `vSemVer` 标签（例如 `git tag v2.1.0 HEAD`、`git push origin refs/tags/v2.1.0`）触发同一工作流。标签名即发布版本；轻量和附注标签均会核对实际提交，已存在的 Release（包括草稿）会拒绝覆盖。默认下载本 EO 仓库的 Release；使用自己的发布仓库时设置 `AGENT_REPOSITORY=你的用户名/仓库名` 并重新部署。避免将与当前面板不兼容的 Agent Release 作为下载源。
 
 公开 CF Agent 的基本 HTTP 上报协议可兼容；**SSL 证书探测需要本版本 Agent**，其他来源的旧 Agent 可能没有该功能。安装后的可用性应以节点真实上报为准。
 

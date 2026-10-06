@@ -207,11 +207,25 @@ test('actual EdgeOne entry supports setup, session/CSRF, Agent reports, live/his
   for (const name of ['install.sh', 'install-linux.sh', 'install-windows.ps1']) {
     const installer = await h.call('GET', `/agent/${name}`, { session: false });
     assert.equal(installer.status, 200);
-    assert.match(installer.text, /sbaliyun\/cf-vps-monitor/);
+    assert.match(installer.text, /sbaliyun\/eo-vps-monitor/);
+    assert.doesNotMatch(installer.text, /sbaliyun\/(?:esa|cf)-vps-monitor/);
     h.env.AGENT_REPOSITORY = 'example/eo-agent';
     const custom = await h.call('GET', `/agent/${name}`, { session: false });
     assert.match(custom.text, /example\/eo-agent/);
-    assert.doesNotMatch(custom.text, /sbaliyun\/(?:esa|cf)-vps-monitor/);
+    assert.doesNotMatch(custom.text, /sbaliyun\/(?:esa|cf|eo)-vps-monitor/);
+    h.env.AGENT_REPOSITORY = 'sbaliyun/eo-vps-monitor-fork';
+    const fork = await h.call('GET', `/agent/${name}`, { session: false });
+    assert.equal(fork.status, 200);
+    const repositoryAssignment = name.endsWith('.ps1')
+      ? /^\$repository\s*=\s*"([^"]+)"\r?$/m
+      : /^CF_MONITOR_REPOSITORY="([^"]+)"\r?$/m;
+    assert.equal(fork.text.match(repositoryAssignment)?.[1], 'sbaliyun/eo-vps-monitor-fork');
+    assert.doesNotMatch(fork.text, /sbaliyun\/(?:esa|cf)-vps-monitor/);
+    h.env.AGENT_REPOSITORY = 'https://github.com/example/eo-agent';
+    const invalid = await h.call('GET', `/agent/${name}`, { session: false });
+    assert.equal(invalid.status, 200);
+    assert.match(invalid.text, /sbaliyun\/eo-vps-monitor/);
+    assert.doesNotMatch(invalid.text, /(?:example\/eo-agent|sbaliyun\/(?:esa|cf)-vps-monitor)/);
     delete h.env.AGENT_REPOSITORY;
     assert.match(installer.headers.get('Content-Type'), /^text\/plain/);
     assert.match(installer.text, name.endsWith('.ps1') ? /\$Mode = "http"/ : /MODE="http"/);

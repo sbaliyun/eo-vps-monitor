@@ -12,7 +12,7 @@ $Server = 'https://panel.example/'
 $scriptDir = $Root
 $env:TEMP = $Root
 $env:PROCESSOR_ARCHITECTURE = 'AMD64'
-$repository = 'sbaliyun/cf-vps-monitor'
+$repository = 'sbaliyun/eo-vps-monitor'
 $branch = 'main'
 $releaseBase = Resolve-ReleaseBase
 $BinaryPath = ''; $BinaryUrl = ''; $ChecksumUrl = ''; $BinaryBaseUrl = ''; $SourceUrl = ''

@@ -25,13 +25,13 @@ import { adminRoutes } from './routes/admin';
 import { adminThemeRoutes, publicThemeRoutes } from './routes/theme';
 import { services, type HonoEnv } from './routes/common';
 
-export const REPOSITORY = 'sbaliyun/cf-vps-monitor';
+export const REPOSITORY = 'sbaliyun/eo-vps-monitor';
 const RAW_BASE = `https://raw.githubusercontent.com/${REPOSITORY}/main/agent`;
 
 function agentInstaller(env: Record<string, unknown>, source: string): string {
   const value = typeof env.AGENT_REPOSITORY === 'string' ? env.AGENT_REPOSITORY.trim() : '';
   const repository = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) ? value : REPOSITORY;
-  return source.replaceAll('sbaliyun/esa-vps-monitor', repository).replaceAll('sbaliyun/cf-vps-monitor', repository);
+  return source.replace(/sbaliyun\/(?:esa|cf|eo)-vps-monitor/g, () => repository);
 }
 
 const SECURITY_HEADERS: Record<string, string> = {
